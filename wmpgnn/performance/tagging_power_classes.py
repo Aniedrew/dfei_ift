@@ -90,7 +90,7 @@ class TaggingPowerAnalyzer:
         defficiency = efficiency * np.sqrt(1 / total_classified + 1 / total_events)
 
         wrong_fraction = num_wrong / total_classified
-        dwrong_fraction = wrong_fraction * (1 / np.sqrt(num_wrong) + 1 / np.sqrt(total_classified))
+        dwrong_fraction = wrong_fraction * np.sqrt(1 / num_wrong + 1 / total_classified)
 
         power = efficiency * (1 - 2 * wrong_fraction) ** 2
         dp_deff = (1 - 2 * wrong_fraction) ** 2
