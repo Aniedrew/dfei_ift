@@ -3,6 +3,7 @@ import sys, os
 import yaml
 import glob
 from tqdm import tqdm
+from collections import defaultdict
 import shutil
 
 from multiprocessing.pool import ThreadPool
@@ -36,12 +37,19 @@ if __name__ == "__main__":
     pv_model = obtain_pv_model(configs)
     # Get the data loader class
     dataloader = DataSetLoader(configs, pv_model)
+    dataloader.pv_asso_bs = configs['settings']['pv_asso_bs']
 
     files = sorted(
         f
         for sample in configs['settings']['sample']
         for f in glob.glob(f'{indir}/{sample}/*.pt.zst')
     )
+
+    # group files by sample
+    files_by_sample = defaultdict(list)
+    for f in files:
+        sample = os.path.basename(os.path.dirname(f))
+        files_by_sample[sample].append(f)
 
 
     def process_file(_file):
@@ -52,7 +60,11 @@ if __name__ == "__main__":
 
 
     with ThreadPool(processes=configs["ncpus"]["loading"]) as pool:
-        list(tqdm(pool.imap(process_file, files), total=len(files),
-                  desc=f"Loading {configs['settings']['sample']} training dataset"))
+        for sample, sample_files in files_by_sample.items():
+            list(tqdm(
+                pool.imap(process_file, sample_files),
+                total=len(sample_files),
+                desc=f"Processing {sample}"
+            ))
     print("Done")
     print("=" * 45)
