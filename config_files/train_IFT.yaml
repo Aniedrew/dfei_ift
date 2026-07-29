@@ -1,9 +1,9 @@
 # Global settings
 settings:
   # Input file information
-  data_dir: "/eos/user/y/yukaiz/DFEI_IFT_Run3/new_test_data/MC_normed/" # DFEI_pythia_nu7p6_normed_pt_data, DFEI_LHCb_LHCbcollision_normed_pt_data
-  sample: [ "BdToDPi_00338410", 'BdToJpsiKst_00338627', 'BsToDsPi_00338392', 'BsToJpsiPhi_00342629', 'BuToJpsiK_00338624']
-  nfiles: [200, 200, 200, 200, 200,]
+  data_dir: "/eos/user/y/yukaiz/DFEI_IFT_20260702/data/PV_asso_DFEI_v0_MC_normed/" # DFEI_pythia_nu7p6_normed_pt_data, DFEI_LHCb_LHCbcollision_normed_pt_data
+  sample: [ "BsToJpsiPhi_00342629", 'BsToJpsiPhi_00342638', 'BdToJpsiKst_00338627', 'BdToJpsiKst_00338645', 'inclusive_00342451', 'inclusive_00342442']
+  nfiles: [100, 100, 100, 100, 200, 200]
   # Training settings
   batch_size: 256
   lr: 1e-3
@@ -12,13 +12,14 @@ settings:
   gacc: 1  # Accumulating number of mini batches before step
   ngpu: 1  # Number of GPUs used for training
   ncpu: 8  # Number CPUs used for multithreading/data loader,
-  norm: "None" # file path to normalization
+  norm: "/eos/user/y/yukaiz/DFEI_IFT_20260702/dfei_repo/preprocessing/old_norm_ported.pt" # file path to normalization
   # Preselection filters
   graph_mode: "None"  # Apply pruning on initial graph: "true", "true_frag" "None"
   node_sel: "true"  # Pruner used to apply the graph mode above: "true", "zeros", "default"
   # PV association
-  pv_model: 11 # Initial PV association: DFEI_model_number (auto select bis), "true", "ip", "None"
+  pv_model: "None" # Initial PV association: DFEI_model_number (auto select bis), "true", "ip", "None"
   pv_model_name: "None" # name to specify the model, "None" (best model auto selected)
+  make_bi: false # If PV asso are applied to disk they are saved bidirectional, so we disable it here
   # Calibration
   calibration: true
   calibrate_mode: [ "BdToDPi", "BdToJpsiKst", "BsToDsPi", 'BsToJpsiPhi', 'BuToJpsiK']

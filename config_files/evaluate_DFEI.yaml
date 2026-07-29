@@ -1,8 +1,8 @@
 settings:
   model_arch: "DFEI" # architecture of the model to evaluate
-  model: 11 # Only version number, auto select the bis model
+  model: 0 # Only version number, auto select the bis model
   model_name: "None" # "best-epoch" path, "None" for auto select bis
-  data_dir: "/eos/user/y/yukaiz/DFEI_IFT_Run3/new_test_data/MC_normed/"
+  data_dir: "/eos/user/y/yukaiz/DFEI_IFT_20260702/data/MC_normed/"
   ncpu: 16  # NCPUs for data loader, full dataset limited to 8 for workers due to cpu mem constraints
   norm: "/eos/user/y/yukaiz/DFEI_IFT_Run3/dfei_repo/preprocessing/normalization_dict.pt" # file path to normalization
 
