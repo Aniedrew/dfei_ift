@@ -10,11 +10,7 @@ import matplotlib.pyplot as plt
 import mplhep as hep
 import warnings
 
-warnings.filterwarnings(
-    "ignore",
-    message="divide by zero encountered in divide",
-    category=RuntimeWarning
-)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 hep.style.use(hep.style.LHCb2)
 
@@ -244,12 +240,12 @@ class CorrectnessCalculator:
         pred_tag = np.argmax(df[["ft_b_score", "ft_bbar_score"]], axis=1) * 2 - 1
         true_tag = np.sign(df["B_id"])
 
-        num_correct = np.sum(pred_tag == true_tag)
+        num_wrong = np.sum(pred_tag != true_tag)
         num_total = len(true_tag)
-        ratio = num_correct / num_total
+        ratio =  num_wrong / num_total
 
         try:
-            uncertainty = ratio * np.sqrt(1 / num_correct + 1 / num_total)
+            uncertainty = ratio * np.sqrt(1 / num_wrong + 1 / num_total)
         except:
             uncertainty = -1
 
@@ -257,19 +253,33 @@ class CorrectnessCalculator:
 
     @staticmethod
     def calculate_by_fragmentation(df: pd.DataFrame) -> dict:
-        if "frags" in df.keys():
+        if "origin_flag" in df.keys():
+            # Remove events where origin flagging failed
+            all_neg1 = df['origin_flag'].apply(lambda s: set(s.split('_')) == {'-1'})
+            df = df[~all_neg1]
+
             """Calculate correctness separately for events with/without fragmentation."""
             pred_tag = np.argmax(df[["ft_b_score", "ft_bbar_score"]], axis=1) * 2 - 1
             true_tag = np.sign(df["B_id"])
 
-            has_frag = df["frags"].notna() & (df["frags"] != "")
+            # 1: SS frag, 2: OS decay, 3: OS frag excited B, 4: Os frag
+            # Only check for frag
+            targets = {'1', '3', '4'}
+            has_frag = df['origin_flag'].apply(lambda s: any(tok in targets for tok in s.split('_')))
 
             results = {}
             for label, mask in [("with_frag", has_frag), ("without_frag", ~has_frag)]:
-                num_correct = np.sum(pred_tag[mask] == true_tag[mask])
+                num_correct = np.sum(pred_tag[mask] != true_tag[mask])
                 num_total = len(true_tag[mask])
-                ratio = num_correct / num_total
-                uncertainty = ratio * np.sqrt(1 / num_correct + 1 / num_total)
+                if num_total == 0:
+                    ratio = -1
+                    uncertainty = -1
+                elif num_correct == 0:
+                    ratio = 0
+                    uncertainty = -1
+                else:
+                    ratio = num_correct / num_total
+                    uncertainty = ratio * np.sqrt(1 / num_correct + 1 / num_total)
                 results[label] = (ratio, uncertainty)
         else:
             results = {'with_frag': [-1, -1], "without_frag": [-1, -1]}

@@ -1,4 +1,5 @@
 import os
+import re
 
 import pandas as pd
 
@@ -21,7 +22,7 @@ def write_tagging_power(file, metric, label, per_event=None):
 
 
 def write_correctness_ratio(file, ratio, frag_results=None):
-    file.write(f"Correctness ratio: ({ratio[0] * 100:.2f} +/- {ratio[1] * 100:.2f})%\n")
+    file.write(f"True wrong fraction: ({ratio[0] * 100:.2f} +/- {ratio[1] * 100:.2f})%\n")
     if frag_results is not None:
         file.write(f"With fragmentation: ({frag_results['with_frag'][0] * 100:.2f} +/- "
                    f"{frag_results['with_frag'][1] * 100:.2f})%\n")
