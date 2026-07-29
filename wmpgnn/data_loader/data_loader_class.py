@@ -14,6 +14,7 @@ class DataSetLoader:
     def __init__(self, configs, pv_model=None):
         self.configs = configs
         self.pv_model = pv_model
+        self.pv_asso_bs = 1024
         self.calibration_class = None
         if configs['settings'].get('calibration', False):
             # The data passed to calibration needs to hold pred_y on track nodes and tr-tr edges with lca information
@@ -61,7 +62,7 @@ class DataSetLoader:
     def _run_pv_association(self, data):
         """Batch-process PV association and return a flat list of events."""
         results = []
-        for batch in DataLoader(data, batch_size=1024):
+        for batch in DataLoader(data, batch_size=250):
             if self.pv_model.name == "pv_asso_module":
                 original = copy.deepcopy(batch)
                 metrics = self.pv_model.forward(batch)
