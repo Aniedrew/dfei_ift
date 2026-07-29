@@ -76,6 +76,7 @@ def get_reco_type(true_component, reco_component, sig_dict):
 
         matching_edges = torch.equal(reco_values, true_values)
         matching_lca = torch.equal(reco_component['lca'][reco_indices], true_lca[true_indices])
+
         if matching_edges and matching_lca:
             sig_dict["PerfectReco"] = 1
         sig_dict['NumBkgParticles'] = -999

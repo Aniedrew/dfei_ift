@@ -108,6 +108,14 @@ class EventReconstruction:
                     self.log["pv_total"][npvs] += int(torch.sum(pv_filter).item())
                     self.log["npvs"][npvs] += 1
 
+
+            # Store information of the fragmentation tracks
+            org_orig_flag, org_pred_ft, part_ids = None, None, None
+            if mode == 'MC':
+                org_orig_flag = graphs[i]['tracks'].origin_flag
+                org_pred_ft = graphs[i]['tracks'].x
+                part_ids = graphs[i]['tracks'].part_ids
+
             # apply the pruning
             edge_selbool = None
             if self.configs.get("node_prune", True):
@@ -119,8 +127,14 @@ class EventReconstruction:
             if self.configs.get("edge_prune", True):
                 edge_pruning(edge_selbool, graphs[i], ('tracks', 'tracks'))
 
+            # Reattach information which got pruned back to the graph
             graphs[i]["tracks"].org_x = track_org_x[track_mask][node_selbool]
             graphs[i]["tracks"].org_pid = track_pid[track_mask][node_selbool]
+            # Origin flag stuff
+            if mode == 'MC':
+                graphs[i]["tracks"].origin_flag = org_orig_flag
+                graphs[i]["tracks"].all_pred_ft = org_pred_ft
+                graphs[i]["tracks"].part_ids = part_ids
 
             # Apply pruning on pv prediction
             if pv_des is not None:
@@ -215,7 +229,14 @@ class EventReconstruction:
                 sig_dict = get_track_info(sig_dict, reco_component)
             if sig_dict['SigMatch']:  # Adding tupled signal B information
                 sig_dict = get_sig_lvl_info(sig_dict, graph, pv_des, ft_des)
+            # Save origin flag of all particles with their id and ft
+            if "origin_flag" in graph['tracks']:
+                sig_dict['origin_flag'] =  '_'.join(str(x.item()) for x in graph['tracks'].origin_flag)
+                sig_dict['all_part_id'] = '_'.join(str(x.item()) for x in graph['tracks'].part_ids)
+                #sig_dict['all_pred_ft'] = '_'.join(str(x.item()) for x in graph['all_pred_ft'].part_ids)
+
             sig_dict_holder.append(sig_dict)
+
         return sig_dict_holder
 
     def reco(self, graph, pv_des, ft_des):
