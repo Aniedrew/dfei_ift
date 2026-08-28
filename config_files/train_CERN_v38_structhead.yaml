@@ -1,0 +1,153 @@
+settings:
+  # Input file information - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 200 ]
+  # Training settings
+  precision: 32
+  batch_size: 8
+  lr: 3e-5  # 与 v38 一致
+  weight_decay: 1e-5
+  epochs: 130  # 从 masshead2 ep113 续训 17 epoch
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  # Preselection filters
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  # 起点: masshead2 best (version_47 ep113, val 35.68; AllParticles 55.86/Perfect 32.70@ep124)
+  # struct head 加到 mass head 基础之上: 同时保留 mass_head 监督 + 新增节点结构监督
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_47/checkpoints/best-epoch=113-val_combined_loss=35.677.ckpt"
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # 推理剪枝阈值: 训练时不用 (B2 软掩码), 评估时用. 0.9 = 同口径对比基线
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  # ==== Loss 再平衡 (与 v38 一致) ====
+  node_prune_weight: 10.0
+  lca_weight: 10.0
+  lca_class2_weight: 2.0
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  source_head: true
+  source_loss_weight: 5.0
+  chain_lca_filter: false
+  chain_lca_conf_thr: 0.3
+  # ==== 第7个监督头: 边级不变质量回归 (输出侧物理监督, 保留) ====
+  mass_head: true
+  mass_head_edge_dim: 16
+  mass_loss_weight: 1.0
+  # ==== 第8个监督头: 节点结构监督 (depth 主 + RC 辅) ====
+  # 用户提议 (2026-08-26): source_head 只预测"根"(1 bit) 信息量低;
+  # 连续结构监督让主干学"节点在衰变树中的位置/层级", 与 LCA 边分类形成一致性约束。
+  # 本实验 = mass head 基础上叠加 struct head (从 masshead2 best 续训)。
+  struct_head: true
+  struct_head_node_dim: 16
+  struct_head_weight: 1.0   # depth 主头权重
+  rc_head_weight: 0.5       # RC 辅头权重
+  # ==== 第9个监督头: 节点级动量回归 (mom_head) ====
+  # PhyIP 探针发现节点表征几乎不携带线性可读动量 (graph_norm+ReLU 打散);
+  # 方案 A: 监督节点表征输出归一化输入动量 [px_n,py_n,pz_n], 让节点表征线性携带运动学。
+  mom_head: true
+  mom_head_node_dim: 16
+  mom_loss_weight: 1.0
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v38_masshead_struct_mom"
+
+DFEI:
+  use_pid: "true"
+  cpt: None  # 权重由 resume_ckpt 恢复
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+    # ==== B2 软掩码 cut 0.85 (与 v38 一致) ====
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

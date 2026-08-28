@@ -61,10 +61,15 @@ def true_node_pruning(node_mask, graph, node_type, edge_types):
     for node_key in node_keys:
         if node_key == "ptr" or node_key == "num_pvs":
             continue
-        graph[node_type][node_key] = graph[node_type][node_key][node_mask]
+        tensor = graph[node_type][node_key]
+        # 跳过非逐节点属性 (如事件级数组 sig_keys/head_ids 等, 新CERN数据会包含)
+        if not hasattr(tensor, "shape") or tensor.shape[0] != len(node_mask):
+            continue
+        graph[node_type][node_key] = tensor[node_mask]
     if hasattr(graph, "final_keys") and node_type == "tracks":
         graph.final_keys = graph.final_keys[node_mask]
-        graph.part_ids = graph.part_ids[node_mask]
+        if hasattr(graph, "part_ids"):  # CERN 旧数据有顶层 part_ids, 论文数据没有
+            graph.part_ids = graph.part_ids[node_mask]
 
     # Adjusting the number of tracks in the global feature
     graph["globals"].x[0][0] = torch.sum(node_mask)  # this needs to be adjusted

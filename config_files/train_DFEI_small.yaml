@@ -1,0 +1,112 @@
+settings:
+  # Input file information - use only 2 chunks for quick testing
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_data/CERN_data"
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 2 ]  # 2个训练chunk for quick test
+  # Training settings - small for testing
+  batch_size: 4
+  lr: 1e-3
+  weight_decay: 1e-5
+  epochs: 2  # 只跑2个epoch验证流程
+  gacc: 1
+  ngpu: 1  # devices=1 → CPU自动fallback, 提交GPU作业时用GPU
+  ncpu: 4
+  # Preselection filters
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+
+
+evaluate:
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 2 ]
+  over_write: "test"
+
+
+DFEI:
+  use_pid: "true"  # CERN数据包含PID信息
+  cpt: None
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 2  # reduced from 4 for faster testing
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

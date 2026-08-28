@@ -10,7 +10,10 @@ class HeteroEdgeBlock(pl.LightningModule):
                  use_edges=True,
                  use_receiver_nodes=True,
                  use_sender_nodes=True,
-                 use_globals=True):
+                 use_globals=True,
+                 configs_per_type=None):
+        """configs_per_type (可选): {edge_type: config}, 支持不同边类型不同输出维度
+        (不对称 latent 扩展, 如 tracks_tracks 24 / tracks_pvs 16)。"""
         super(HeteroEdgeBlock, self).__init__()
         self._edge_types = edge_types
         self._use_edges = use_edges
@@ -19,7 +22,8 @@ class HeteroEdgeBlock(pl.LightningModule):
         self._use_globals = use_globals
         self._edge_models = {}
         for edge_type in edge_types:
-            self._edge_models[edge_type] = create_mlp(config)
+            cfg = configs_per_type.get(edge_type, config) if configs_per_type else config
+            self._edge_models[edge_type] = create_mlp(cfg)
         self._edge_models_model_dict = torch.nn.ModuleDict({str(i): j for i, j in self._edge_models.items()})
 
     def forward(self, graph):

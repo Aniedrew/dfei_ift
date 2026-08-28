@@ -1,0 +1,163 @@
+settings:
+  # Input file information - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 200 ]
+  # Training settings
+  precision: 32
+  batch_size: 8
+  lr: 3e-5
+  weight_decay: 1e-5
+  epochs: 150
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  # Preselection filters
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  # 起点: v38 best (ep101, val 35.860; b2_cut0.85 + class2加权2.0 + chain_lca_ce, thr09 Perfect 29.26%)
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_38/checkpoints/best-epoch=101-val_combined_loss=35.860.ckpt"
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # 推理剪枝阈值: 训练时不用 (B2 软掩码), 评估时用. 0.9 = 同口径对比基线
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  # ==== Loss 再平衡 ====
+  node_prune_weight: 10.0
+  lca_weight: 10.0
+  # ==== 方案4/5/6 (沿用 v38) ====
+  lca_class2_weight: 2.0
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  # ==== 源检测辅助头 ====
+  source_head: true
+  source_loss_weight: 5.0
+  # ==== 链级 LCA 物理判据 (推理后处理, 训练时关闭) ====
+  chain_lca_filter: false
+  chain_lca_conf_thr: 0.3
+  # ==== 方案7(v41): PV 分簇分层重建 (可训练 cluster MLP 头 + 温度退火 + 课程过渡) ====
+  # 目标: 把多B事件按 PV 拆成多个单B子图, 每个子图走与 v38 单B完全相同的处理路径
+  # (GNN/loss/重建), 保留单B处理的全部优点; 只改"怎么切"。
+  # 分簇器 = model.pv_cluster_head (带训练的 MLP): 吃 concat(tracks.x原始8, pvs.x 3,
+  # trpv.edges 1)=12 维 -> track 属 PV 的 logit, BCE 监督 (与 pv_asso 同标签)。
+  # v40 失败教训 → v41 修复:
+  #   ① val 也切子图 (消除 train/val 图结构 gap, 之前 val 全图导致 val loss 发散)
+  #   ② truth->cluster 课程式过渡: alpha 1.0(truth 稳定热启动)->0.0(cluster 头),
+  #      避免随机 cluster 头直接扰动 v38 权重
+  #   ③ 训练侧子图数上限 (cap), 解决 ~2h/epoch 的问题
+  pv_cluster: true
+  # 推理侧 track->PV 分配: "cluster_head" 用训练同一 cluster 头 (推荐, 对齐), "pred" 退回 pv_asso, "true" 真值
+  pv_cluster_assign: "cluster_head"
+  # 簇内最小 track 数 (低于此数的簇并入无PV簇, 防碎片链; 训练/推理同规则)
+  pv_cluster_min_tracks: 3
+  # cluster 头结构
+  pv_cluster_head_input_dim: 12
+  pv_cluster_head_hidden: 64
+  pv_cluster_loss_weight: 1.0
+  # 温度退火 (与 B2 tau 同哲学, 相对本次训练起点): 1.0(探索,Gumbel采样) -> 0.1(收敛 argmax)
+  pv_cluster_tau_start: 1.0
+  pv_cluster_tau_end: 0.1
+  pv_cluster_tau_epochs: 100
+  # 课程式过渡 (相对本次训练起点): alpha 1.0(truth 分簇) -> 0.0(cluster 头), 30 epoch 线性
+  pv_cluster_curriculum_epochs: 30
+  # 训练侧子图数量上限 (0=不限; 随机保留提速, val/test 不受限)
+  pv_cluster_max_subgraphs: 24
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v41_pvcluster"
+
+DFEI:
+  use_pid: "true"
+  cpt: None  # 权重由 resume_ckpt 恢复
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

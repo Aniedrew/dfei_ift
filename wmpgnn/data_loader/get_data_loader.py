@@ -22,7 +22,7 @@ def load_trn_val_loader(configs):
 
     # here full event using chunkloading
     data_dir = configs["settings"]["data_dir"]
-    if "nu7p6" in data_dir or "LHCbcollision" in data_dir:
+    if "nu7p6" in data_dir or "LHCbcollision" in data_dir or "LHCb" in data_dir or "CERN_data" in data_dir or "MC_normed" in data_dir:
         print("Using chunk loader")
         from wmpgnn.data_loader.chunk_loader import get_trn_val_loaders
 
@@ -63,7 +63,7 @@ def load_tst_loader(configs):
         return configs, tst_loader, chunkloader
 
     data_dir = configs["settings"]["data_dir"]
-    if "nu7p6" in data_dir or "LHCbcollision" in data_dir:
+    if "nu7p6" in data_dir or "LHCbcollision" in data_dir or "LHCb" in data_dir or "CERN_data" in data_dir or "MC_normed" in data_dir:
         print("Using chunk loader")
         from wmpgnn.data_loader.chunk_loader import get_tst_loader
 

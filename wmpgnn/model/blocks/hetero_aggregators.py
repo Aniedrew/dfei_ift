@@ -60,14 +60,17 @@ class HeteroEdgesToNodesAggregator(pl.LightningModule):
                 D_e is the edge-feature dimensionality, containing the summed (and weighted)
                 edge features per node.
         """
+        # torch_scatter does not support FP16; cast to FP32 for scatter
+        edges = graph[edge_type].edges.float()
+        weight = weight.float() if weight is not None else None
         indices = graph[edge_type].edge_index[0] if self._use_sent_edges else graph[edge_type].edge_index[1]
         num_nodes = graph[edge_type[0]].x.shape[0] if self._use_sent_edges else graph[edge_type[2]].x.shape[0]
 
-        out = graph[edge_type].edges.new_zeros(num_nodes, graph[edge_type].edges.shape[1])
+        out = edges.new_zeros(num_nodes, edges.shape[1])
         if self._weighted:
-            output = scatter_add(graph[edge_type].edges * weight, indices.to(torch.int64), out=out, dim=0)
+            output = scatter_add(edges * weight, indices.to(torch.int64), out=out, dim=0)
         else:
-            output = scatter_add(graph[edge_type].edges, indices.to(torch.int64), out=out, dim=0)
+            output = scatter_add(edges, indices.to(torch.int64), out=out, dim=0)
         return output
 
 class HeteroEdgesToGlobalsAggregator(pl.LightningModule):
@@ -122,10 +125,14 @@ class HeteroEdgesToGlobalsAggregator(pl.LightningModule):
                 per graph.
         """
         out = graph[edge_type].edges.new_zeros(graph['globals'].x.shape[0], graph[edge_type].edges.shape[1])
+        # Cast to FP32 for torch_scatter compatibility under FP16 training
+        edges_f = graph[edge_type].edges.float()
+        w = weights.float() if weights is not None else None
+        out = edges_f.new_zeros(graph['globals'].x.shape[0], edges_f.shape[1])
         if self._weighted:
-            output = self._scatter_func(graph[edge_type].edges*weights, graph[edge_type[0]].batch[ graph[edge_type].edge_index[0] ] ,out=out, dim=0)
+            output = self._scatter_func(edges_f * w, graph[edge_type[0]].batch[ graph[edge_type].edge_index[0] ] ,out=out, dim=0)
         else:
-            output = self._scatter_func(graph[edge_type].edges, graph[edge_type[0]].batch[ graph[edge_type].edge_index[0] ] ,out=out, dim=0)
+            output = self._scatter_func(edges_f, graph[edge_type[0]].batch[ graph[edge_type].edge_index[0] ] ,out=out, dim=0)
         return output
 
 
@@ -177,8 +184,12 @@ class HeteroNodesToGlobalsAggregator(pl.LightningModule):
                 per graph.
         """
         out = graph[node_type].x.new_zeros(graph['globals'].x.shape[0], graph[node_type].x.shape[1])
+        # Cast to FP32 for torch_scatter compatibility under FP16 training
+        nodes = graph[node_type].x.float()
+        w = weights.float() if weights is not None else None
+        out = nodes.new_zeros(graph['globals'].x.shape[0], nodes.shape[1])
         if self._weighted:
-            output = self._scatter_func(graph[node_type].x * weights, graph[node_type].batch,out=out, dim=0)
+            output = self._scatter_func(nodes * w, graph[node_type].batch, out=out, dim=0)
         else:
-            output = self._scatter_func(graph[node_type].x, graph[node_type].batch,out=out, dim=0)
+            output = self._scatter_func(nodes, graph[node_type].batch, out=out, dim=0)
         return output

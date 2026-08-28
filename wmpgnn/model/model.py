@@ -41,6 +41,17 @@ class DFEI_HGNN(pl.LightningModule):
         if self.out_trafo:
             self._op_trafo = HeteroGraphTrafo(config["op_trafo"])
 
+        # ==== B2: 可微剪枝训练总开关 (GNblocks 段 b2: true) ====
+        # 温度退火由 lightning module 每 epoch 调用 set_b2_tau 注入到各 block
+        self._b2_enable = bool(config["GNblocks"].get("b2", False))
+
+    def set_b2_tau(self, tau: float):
+        """注入当前温度到各 GN block (B2 退火; 非 B2 时无效果)。"""
+        if self.GN_block and hasattr(self, "_blocks"):
+            for core in self._blocks:
+                if hasattr(core, "_b2_tau"):
+                    core._b2_tau = float(tau)
+
     def forward(self, data):
         init_graph_pid = data['tracks'].x[:, -6:]  # charge + 5 pid, hard coded be careful
         # Latent graph
@@ -49,12 +60,17 @@ class DFEI_HGNN(pl.LightningModule):
         latent = data.clone()
 
         for b, core in enumerate(self._blocks):
+            # ==== B2: 仅最后一个 GN block 模拟剪枝 (与推理剪枝作用于最终输出权重的位置一致) ====
+            core._b2_active = b == (len(self._blocks) - 1) and bool(getattr(self, "_b2_enable", True))
             data = core(data, init_graph_pid)
             if b < (len(self._blocks) - 1):
                 data = hetero_graph_concat(latent, data)
 
         if self.decode:
             data = self._decoder(data)
+            # 保存 decoder 边表征 (op_trafo 会覆盖 edges 为 LCA 输出) —— 供辅助监督头
+            # (如边级不变质量回归 mass_head) 使用, 保持端到端可微。
+            data[('tracks', 'to', 'tracks')].latent_edges = data[('tracks', 'to', 'tracks')].edges.clone()
 
         data = self._op_trafo(data)
 

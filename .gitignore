@@ -3,3 +3,5 @@ lightning_logs/
 LHCb_logs/
 pythia_logs/
 .ipynb_checkpoints/
+# 训练作业日志 (.out/.err, 体积大且价值低, 不入库)
+logs/

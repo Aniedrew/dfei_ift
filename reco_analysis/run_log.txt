@@ -1,0 +1,21 @@
+统计图已保存到 reco_analysis
+Loading checkpoint: LHCb_logs/DFEI/version_8/checkpoints/best-epoch=82-val_combined_loss=0.925.ckpt
+Loaded 400 test events
+Running inference on test events...
+
+事件分类统计 (基于真值vs重建衰变树):
+  notfound: 164 (41.0%)
+  perfect: 85 (21.2%)
+  partial: 81 (20.2%)
+  allfound: 68 (17.0%)
+  noniso: 2 (0.5%)
+
+选择代表性事件...
+  已保存: evt_perfect_0_event89921802.png
+  已保存: evt_perfect_1_event92673054.png
+  已保存: evt_partial_0_event89921787.png
+  已保存: evt_partial_1_event89921857.png
+  已保存: evt_notfound_0_event89921804.png
+  已保存: evt_notfound_1_event89921861.png
+
+全部完成! 结果保存在 reco_analysis/

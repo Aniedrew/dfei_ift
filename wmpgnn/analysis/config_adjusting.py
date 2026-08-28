@@ -6,10 +6,10 @@ from typing import Dict
 def obtain_log_dir(_configs: Dict) -> Dict:
     if 'pythia' in _configs["settings"]['data_dir']:
         _configs["log_dir"] = 'pythia_logs'
-    elif 'LHCb' in _configs["settings"]['data_dir']:
+    elif any(kw in _configs["settings"]['data_dir'] for kw in ['LHCb', 'CERN', 'MC_normed']):
         _configs["log_dir"] = 'LHCb_logs'
     else:
-        raise ValueError("Invalid config")
+        raise ValueError(f"Invalid config: data_dir={_configs['settings']['data_dir']}")
     return _configs
 
 

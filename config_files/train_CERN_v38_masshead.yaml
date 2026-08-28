@@ -1,0 +1,146 @@
+settings:
+  # Input file information - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 200 ]
+  # Training settings
+  precision: 32
+  batch_size: 8
+  lr: 3e-5  # 与 v38 一致
+  weight_decay: 1e-5
+  epochs: 125  # 最小实验: 从 v38 ep105 续训 20 epoch
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  # Preselection filters
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  # 起点: v38 best (ep105, val 35.921; Perfect 29.26%) + 已学 1 epoch mass head (ep106, val 38.946)
+  # version_46 = 9997828 首轮 (早停 bug 只跑 1 epoch, 但 mass head 已收敛 train 0.58)
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_46/checkpoints/best-epoch=106-val_combined_loss=38.946.ckpt"
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # 推理剪枝阈值: 训练时不用 (B2 软掩码), 评估时用. 0.9 = 同口径对比基线
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  # ==== Loss 再平衡 (tt_edges 占 91%, node/LCA 欠投入) ====
+  node_prune_weight: 10.0   # w_node
+  lca_weight: 10.0          # w_lca
+  # ==== 方案4(改良): class2 加权 2.0 (与 v38 一致) ====
+  lca_class2_weight: 2.0
+  # ==== 方案5: 链内 LCA 一致性辅助损失 (与 v38 一致) ====
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  # ==== 方案6: 链内边"类别正确"监督 (与 v38 一致) ====
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  # ==== 源检测辅助头 (与 v38 一致) ====
+  source_head: true
+  source_loss_weight: 5.0
+  # ==== 链级 LCA 物理判据 (推理后处理, 训练时关闭) ====
+  chain_lca_filter: false
+  chain_lca_conf_thr: 0.3
+  # ==== 第7个监督头: 边级不变质量回归 (输出侧物理监督, 最小实验) ====
+  # 目标 = log10(π-π 不变质量/MeV), 输入 = decoder 边表征 (16维);
+  # 纯辅助监督, 不改主任务端到端目标, 让边表征携带动量-夹角物理信息。
+  mass_head: true
+  mass_head_edge_dim: 16
+  mass_loss_weight: 1.0
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v38_masshead2"
+
+DFEI:
+  use_pid: "true"
+  cpt: None  # 权重由 resume_ckpt 恢复
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+    # ==== 方案4(改良): B2 软掩码 cut 0.85 (与 v38 一致) ====
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

@@ -1,0 +1,40 @@
+settings:
+  # Data directory for test data - 公开LHCb碰撞数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_data/converted_LHCbcollision"
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 50 ]  # 50个tst文件
+  # Model to evaluate
+  model_arch: "DFEI"
+  model: 30  # version_30 (公开数据 权重修复 FP32 训练)
+  # Hardware
+  ngpu: 1
+  ncpu: 4
+  # Preselection filters (must match training config)
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # 论文 tight pruning: 阈值 0.2 (论文 Table 2/4 所用)
+  edge_prune_thr: 0.2
+  node_prune_thr: 0.2
+
+evaluate:
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 50 ]
+  over_write: "v30_paper_thr02"
+
+DFEI:
+  use_pid: "None"  # 公开数据不含PID, 与训练配置一致
+  cpt: 30  # version number, will be overwritten by settings.model
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]

@@ -1,0 +1,113 @@
+settings:
+  # Input file information - 新CERN标准化MC数据 (与 train_CERN_normed.yaml 一致)
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 200 ]  # 200个trn文件
+  # Training settings
+  precision: 32  # FP32
+  batch_size: 8
+  lr: 1e-4  # 续训降学习率 (原 1e-3; 修复 loss 爆炸)
+  weight_decay: 1e-5
+  epochs: 150  # 从 ep56 续训, 给足空间
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  # Preselection filters
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  # 从 v32 best checkpoint 续训 (v32 在停机维护时被中断于 ep61, best val=36.152)
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_32/checkpoints/best-epoch=61-val_combined_loss=36.152.ckpt"
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: ""
+
+DFEI:
+  use_pid: "true"  # 包含PID信息
+  cpt: None  # 权重由 resume_ckpt 恢复, 不需 cpt 预加载
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

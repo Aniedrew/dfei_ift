@@ -1,0 +1,118 @@
+settings:
+  # Input file information - 新CERN标准化MC数据 (与 train_CERN_normed.yaml 一致)
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 200 ]  # 200个trn文件
+  # Training settings
+  precision: 32  # FP32
+  batch_size: 8
+  lr: 1e-4  # 与 v32 续训一致
+  weight_decay: 1e-5
+  epochs: 150
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  # Preselection filters
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  # 从 v32 best checkpoint 续训 (v32 跑完后确认/更新为最终 best 路径)
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_32/checkpoints/best-epoch=58-val_combined_loss=36.795.ckpt"
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  # ==== 第5个监督头: 候选衰变链选择 MLP (联合训练, 设计文档 SELECTION_MLP_DESIGN.md) ====
+  selection_mlp: "builtin"   # scorer 挂在 model 上随 checkpoint 保存/加载
+  selection_mlp_node_dim: 17   # 1 + tracks.x (encoder 输出 16 维)
+  selection_mlp_edge_dim: 10   # 1 + LCA(4) + 边物理特征(5)
+  chain_select_loss_weight: 10.0
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: ""
+
+DFEI:
+  use_pid: "true"  # 包含PID信息
+  cpt: None  # 权重由 resume_ckpt 恢复, 不需 cpt 预加载
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

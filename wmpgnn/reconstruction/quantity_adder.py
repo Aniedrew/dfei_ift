@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 
+from wmpgnn.reconstruction.reco_helper import get_final_keys
+
 
 def get_asso_frag(sig_dict, graph, cluster):
     # check if the frag exists if not just return it problem solved. yey
@@ -9,7 +11,7 @@ def get_asso_frag(sig_dict, graph, cluster):
     res_dict = sig_dict
 
     cluster_keys = cluster['node_keys']
-    keys = graph['final_keys']
+    keys = get_final_keys(graph).cpu().numpy()
     b_daugthers_mask = np.isin(keys, cluster_keys)
     b_idx = str(graph["tracks"].asso_hh[b_daugthers_mask][0].item())
 
@@ -27,7 +29,7 @@ def get_pred_ft(sig_dict, graph, cluster, ft_score):
     res_dict = sig_dict
     # Save combined b bbar score, save individual scores, save pid of final
     cluster_keys = cluster['node_keys']
-    keys = graph['final_keys']
+    keys = get_final_keys(graph).cpu().numpy()
     b_daugthers_mask = np.isin(keys, cluster_keys)
 
     # Get the pid of the particles
@@ -47,7 +49,7 @@ def get_pv_asso(sig_dict, graph, cluster, pv_des):
     res_dict = sig_dict
     # Get the key information of the cluster which is looked at
     cluster_keys = cluster['node_keys']
-    keys = graph['final_keys']
+    keys = get_final_keys(graph).cpu().numpy()
     b_daugthers_mask = np.isin(keys, cluster_keys)
 
     # Get the individual scores stored as strings

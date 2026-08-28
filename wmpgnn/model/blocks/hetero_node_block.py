@@ -8,7 +8,10 @@ from wmpgnn.model.mlp_class import create_mlp
 
 class HeteroNodeBlock(pl.LightningModule):
     def __init__(self, config, node_types, edge_types, use_sender_edges=True,
-                 use_receiver_edges=False, use_globals=True, use_nodes=True, weighted_mp=False):
+                 use_receiver_edges=False, use_globals=True, use_nodes=True, weighted_mp=False,
+                 configs_per_type=None):
+        """configs_per_type (可选): {node_type: config}, 支持不同节点类型不同输出维度
+        (不对称 latent 扩展, 如 tracks 32 / pvs 16)。"""
         super(HeteroNodeBlock, self).__init__()
 
         self._use_sender_edges = use_sender_edges
@@ -27,7 +30,8 @@ class HeteroNodeBlock(pl.LightningModule):
 
         self._node_models = {}
         for node_type in self._node_types:
-            self._node_models[node_type] = create_mlp(config)
+            cfg = configs_per_type.get(node_type, config) if configs_per_type else config
+            self._node_models[node_type] = create_mlp(cfg)
 
         if self._use_receiver_edges:
             self._received_edges_aggregator = HeteroEdgesToNodesAggregator(weighted=weighted_mp)

@@ -1,0 +1,118 @@
+settings:
+  # Data directory for test data - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]  # 20个tst文件
+  # Model to evaluate
+  model_arch: "DFEI"
+  model: 31  # version_31 (CERN修复版, best ep64 val 37.123)
+  # Hardware
+  ngpu: 1
+  ncpu: 4
+  # Preselection filters (must match training config)
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # ==== 方案F: seed-expand 连通性保留剪枝 (默认参数) ====
+  node_expand: true          # 开启方案F (替代 node/edge 硬阈值剪枝)
+  node_expand_k0: 12         # 首跳 per-node top-k
+  node_expand_max_hop: 3     # 最大扩展跳数
+  node_expand_decay: 1       # 每跳 k 衰减
+  node_expand_seed_thr: 0.5  # 种子节点阈值 (原 node_prune_thr 不再直接删边)
+  node_expand_edge_thr: 0.0  # 扩展内边全保留 (轻软)
+  node_expand_max_nodes: 200 # 全局节点 budget
+  chain_lca_record: true   # 只记录每条链的 LCA conf, 供后处理多阈值对比
+  # 以下阈值在 node_expand=true 时仅作种子定义参考, 不直接参与删边
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v31_f_lca_record_thr09"
+
+DFEI:
+  use_pid: "true"
+  cpt: 31  # version number, will be overwritten by settings.model
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

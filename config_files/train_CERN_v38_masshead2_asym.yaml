@@ -1,0 +1,98 @@
+settings:
+  # 不对称 latent 扩展: tracks 节点 32 维 / tt 边 24 维 (其余 16)
+  # 物理自由度分析: 节点承载 ~12-14 自由度 + 多监督头竞争, 16 贴下限; 边 ~7-9
+  # 基于 v38 算法栈 + mass head (struct/mom 等消融结果出来后再叠加)
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 200 ]
+  precision: 32
+  batch_size: 8
+  lr: 3e-5
+  weight_decay: 1e-5
+  epochs: 150
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  # 从头训练 (结构变化, 不能续训) —— 注意: 不要写 resume_ckpt: None (YAML 会解析成字符串 "None" 导致 FileNotFoundError)
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  node_prune_weight: 10.0
+  lca_weight: 10.0
+  lca_class2_weight: 2.0
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  source_head: true
+  source_head_node_dim: 32   # 节点表征 32 维
+  source_loss_weight: 5.0
+  chain_lca_filter: false
+  chain_lca_conf_thr: 0.3
+  # ==== 第7个监督头: mass head (边表征 24 维) ====
+  mass_head: true
+  mass_head_edge_dim: 24
+  mass_loss_weight: 1.0
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v38_asym_mass"
+
+DFEI:
+  use_pid: "true"
+  cpt: None
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 32 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }  # 节点 32
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 24 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }  # tt 边 24
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward: { layers: [ -1, 128, 128, 16 ], norm: "None", dropout: 0.01 }
+    # 不对称: tracks 节点 32, tt 边 24; 其余类型默认 16
+    MLP_forward_dim: { tracks: 32, tracks_tracks: 24 }
+    MLP_infer: { layers: [ -1, 16, 16, 16, 1 ], norm: "None", dropout: 0.01 }
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+  decoder:
+    usage: True
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 32 ], norm: [ "None", "None" ], dropout: 0.01 }  # 节点 32
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 24 ], norm: [ "None", "None" ], dropout: 0.01 }  # tt 边 24
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP: { layers: [ -1, -1 ], norm: "None", dropout: 0.01 }

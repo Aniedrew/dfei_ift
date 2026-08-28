@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# DFEI CERN v38 训练 (456改良: b2_cut0.85对齐 + class2加权2.0 + chain_lca_ce链级类别监督)
+# 前置:
+#   1. 已实现 chain_lca_ce (dfei_lightning_module.py _chain_lca_loss 方案6)
+#   2. resume_ckpt 已指向 v37 best ep90 (val 35.562)
+#   3. 不指定节点 (调度器随机分卡), PREFLIGHT 失败自动重排直到拿到可用 GPU
+#
+# 提交方式:
+#   hep_sub submit_train_cern_v38.sh -g ghigh -gpu 1 -cpu 4 -m 32000 -wt long \
+#       -o logs/train_cern_v38.out -e logs/train_cern_v38.err
+#
+
+source ~/.bashrc
+
+export PATH=$HOME/miniconda3/envs/dfei/bin:$PATH
+export PYTHONPATH=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn:$PYTHONPATH
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+cd /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn
+
+echo "========================================"
+echo "JOB ID      : $_CONDOR_IHEP_JOB_ID"
+echo "HOST        : $(hostname)"
+echo "START TIME  : $(date)"
+echo "PYTHON      : $(which python3)"
+echo "GPU         : $CUDA_VISIBLE_DEVICES"
+echo "CONFIG      : config_files/train_CERN_v38.yaml"
+echo "========================================"
+
+# === 前置检查: chain_lca_ce 方案6 已实现 ===
+if ! grep -q "chain_lca_ce" wmpgnn/lightning_module/dfei_lightning_module.py; then
+  echo "[CHECK] FAIL: chain_lca_ce 未实现, 拒绝提交"
+  exit 1
+fi
+echo "[CHECK] chain_lca_ce 代码已实现"
+
+# === GPU 预检 (含 matmul, 真正触发显存分配; 失败自动重排) ===
+echo "[PREFLIGHT] GPU check at $(date), device=$CUDA_VISIBLE_DEVICES"
+nvidia-smi -L 2>&1 | head -3
+python3 -u -c "
+import torch
+if not torch.cuda.is_available():
+    print('[PREFLIGHT] FAIL: torch.cuda.is_available()=False')
+    raise SystemExit(77)
+p = torch.cuda.get_device_properties(0)
+print(f'[PREFLIGHT] OK: {p.name} (cap {p.major}.{p.minor}, mem {p.total_memory/1024**3:.1f} GB)')
+a = torch.randn(500,500,device='cuda')
+b = (a @ a).sum().item()
+print('[PREFLIGHT] matmul OK, sum=%.3f' % b)
+"
+PREFLIGHT_RC=$?
+if [ $PREFLIGHT_RC -ne 0 ]; then
+  echo "[PREFLIGHT] FAIL (rc=$PREFLIGHT_RC): 分配的GPU不可用"
+  # === 自动重试: 失败后立即重排, 几乎无限次 (直到拿到可用GPU跑起来) ===
+  MAX_RETRY=1000
+  RETRY_SLEEP=60
+  RETRY_COUNT_FILE=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/v38.retry_count
+  N=0
+  [ -f "$RETRY_COUNT_FILE" ] && N=$(cat "$RETRY_COUNT_FILE")
+  if [ "$N" -lt "$MAX_RETRY" ]; then
+    N=$((N+1))
+    echo "$N" > "$RETRY_COUNT_FILE"
+    echo "[RETRY] 第 $N/$MAX_RETRY 次, sleep ${RETRY_SLEEP}s 后重排..."
+    sleep $RETRY_SLEEP
+    echo "[RETRY] 重新提交 submit_train_cern_v38.sh (原作业 ${_CONDOR_IHEP_JOB_ID:-unknown}, GPU ${CUDA_VISIBLE_DEVICES})"
+    hep_sub submit_train_cern_v38.sh -g ghigh -gpu 1 -cpu 4 -m 32000 -wt long -o logs/train_cern_v38.out -e logs/train_cern_v38.err
+    echo "[RETRY] 已重提, 本次退出"
+    exit 0
+  fi
+  echo "[RETRY] 已达 ${MAX_RETRY} 次上限, 放弃"
+  echo "========================================"
+  echo "EXIT CODE   : 77"
+  echo "END TIME    : $(date)"
+  echo "========================================"
+  JOB_ID="${_CONDOR_IHEP_JOB_ID:-unknown}"
+  curl -s --connect-timeout 10 -X POST https://sctapi.ftqq.com/SCT387631TDiuLj6UNUsFTaDRjkaSWcdPv.send \
+    -d "title=[DFEI] ⚠️ v38训练 Job ${JOB_ID} 分到坏GPU" \
+    -d "desp=## v38训练作业 ${JOB_ID} GPU预检失败(重试${MAX_RETRY}次后仍失败)
+| 作业 | ${JOB_ID} |
+| 主机 | $(hostname) |
+| GPU | ${CUDA_VISIBLE_DEVICES} |
+| 时间 | $(date) |" > /dev/null 2>&1
+  exit 77
+fi
+
+# 标记训练已真正开始
+touch /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/v38_started.flag
+
+python3 -u wmpgnn/analysis/trainer.py --config config_files/train_CERN_v38.yaml
+
+EXIT_CODE=$?
+echo "========================================"
+echo "EXIT CODE   : $EXIT_CODE"
+echo "END TIME    : $(date)"
+echo "========================================"
+
+# Server酱微信通知
+JOB_ID="${_CONDOR_IHEP_JOB_ID:-unknown}"
+STATUS="✅ 完成"
+[ $EXIT_CODE -ne 0 ] && STATUS="❌ 失败"
+curl -s --connect-timeout 10 -X POST https://sctapi.ftqq.com/SCT387631TDiuLj6UNUsFTaDRjkaSWcdPv.send \
+  -d "title=[DFEI] ${STATUS} v38训练 Job ${JOB_ID}" \
+  -d "desp=## v38训练作业 ${JOB_ID} ${STATUS}
+
+| 项目 | 值 |
+|------|-----|
+| **作业ID** | ${JOB_ID} |
+| **状态** | ${STATUS} |
+| **主机** | $(hostname) |
+| **配置** | train_CERN_v38.yaml (b2_cut0.85+cl2_2.0+chain_lca_ce) |
+| **结束时间** | $(date) |
+| **退出码** | ${EXIT_CODE} |
+
+### 查看日志
+\`\`\`bash
+tail -50 /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/train_cern_v38.out
+\`\`\`" > /dev/null 2>&1
+
+exit $EXIT_CODE

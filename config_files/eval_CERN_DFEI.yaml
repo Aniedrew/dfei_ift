@@ -1,0 +1,39 @@
+settings:
+  # Data directory for test data
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_data/CERN_data_LHCb"
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 10 ]  # 10个tst文件，先用小批量测试
+  # Model to evaluate
+  model_arch: "DFEI"
+  model: 8  # version_8 (CERN数据训练的模型)
+  # Hardware
+  ngpu: 1
+  ncpu: 4
+  # Preselection filters (must match training config)
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+
+evaluate:
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 40 ]
+  over_write: ""
+
+DFEI:
+  use_pid: "true"
+  cpt: 8  # version number, will be overwritten by settings.model
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]

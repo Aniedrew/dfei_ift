@@ -1,0 +1,40 @@
+settings:
+  # Data directory for test data - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]  # 20个tst文件
+  # Model to evaluate
+  model_arch: "DFEI"
+  model: 25  # version_25 (CERN新数据训练)
+  # Hardware
+  ngpu: 1
+  ncpu: 4
+  # Preselection filters (must match training config)
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # 论文 tight pruning: 阈值 0.2
+  edge_prune_thr: 0.2
+  node_prune_thr: 0.2
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "paper_thr02"
+
+DFEI:
+  use_pid: "true"
+  cpt: 25  # version number, will be overwritten by settings.model
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]

@@ -73,24 +73,29 @@ def transform_pos_weight(_weights, _configs, mode="train"):
     else:
         summed = _weights
 
-    if _configs.get("LCA__weights"):
-        pos_weight["LCA"] = torch.sum(summed["LCA"]) / (4 * summed["LCA"])
+    # 键名与 config_files/*.yaml 的 inference 部分保持一致 (单下划线)
+    if _configs.get("LCA_weights"):
+        lca_w = torch.sum(summed["LCA"]) / (4 * summed["LCA"])
+        # LCA 某些类样本为 0 -> inf 权重 -> CrossEntropyLoss 出现 inf (CERN class2/3=0)
+        # 修复 (与 FT 一致): inf -> 1e3 兜底, 再 clamp(≤1e3) 防有限但极大的权重
+        lca_w = torch.nan_to_num(lca_w, nan=1.0, posinf=1e3, neginf=1e3).clamp(max=1e3)
+        pos_weight["LCA"] = lca_w
 
-    if _configs.get("node_prune__weights"):
+    if _configs.get("node_prune_weights"):
         pos_weight["nodes"] = torch.tensor([summed["neg_nodes"] / summed["pos_nodes"]])
 
-    if _configs.get("edge_prune__weights"):
+    if _configs.get("edge_prune_weights"):
         pos_weight["edges"] = torch.tensor([summed["neg_edges"] / summed["pos_edges"]])
 
-    if _configs.get("frag__weights"):
+    if _configs.get("frag_weights"):
         pos_weight["frag"] = torch.tensor(summed["neg_frag"] / summed["pos_frag"])
 
-    if _configs.get("FT__weights"):
+    if _configs.get("FT_weights"):
         ft__weights = torch.sum(summed["FT"]) / (3 * summed["FT"])
         ft__weights[torch.isinf(ft__weights)] = 1.0
         pos_weight["FT"] = ft__weights
 
-    if _configs.get("pv_asso__weights") and summed["neg_pv_asso"] != 0:
+    if _configs.get("pv_asso_weights") and summed["neg_pv_asso"] != 0:
         pos_weight["pv_asso"] = torch.tensor([summed["neg_pv_asso"] / summed["pos_pv_asso"]])
 
     return pos_weight

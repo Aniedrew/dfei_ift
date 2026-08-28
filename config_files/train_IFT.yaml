@@ -1,9 +1,9 @@
 # Global settings
 settings:
   # Input file information
-  data_dir: "/eos/user/y/yukaiz/DFEI_IFT/cached_data/DFEI_LHCb_LHCbcollision_normed_pt_data" # DFEI_pythia_nu7p6_normed_pt_data, DFEI_LHCb_LHCbcollision_normed_pt_data
-  sample: [ "00342442_inclusive", "00342451_inclusive","00342629_Bs_Jpsiphi", "00342638_Bs_Jpsiphi" ]
-  nfiles: [ 200, 200, 100, 100]
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_data/converted_LHCbcollision" # Local converted data
+  sample: [ "00342442_inclusive" ]  # We only have the inclusive sample
+  nfiles: [ 50 ]  # 50 trn_data_*.zst files
   # Training settings
   batch_size: 64
   lr: 1e-3
@@ -15,7 +15,7 @@ settings:
   # Preselection filters
   graph_mode: "None"  # Apply pruning on initial graph: "true", "true_frag" "None"
   node_sel: "true"  # Pruner used to apply the graph mode above: "true", "zeros", "default"
-  pv_model: 4 # Initial PV association: DFEI_model_number, "true", "ip", "None"
+  pv_model: "None" # No trained DFEI model yet; use "None" to skip PV association
 
 inference:
   FT: True
@@ -29,14 +29,14 @@ inference:
 
 
 evaluate:
-  sample: [ "00342629_Bs_Jpsiphi", "00342638_Bs_Jpsiphi" ]
-  nfiles: [ 20, 20 ]
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 50 ]
   over_write: "" # argument to overwrite the output names to rerun safely the same sample: "" for no overwrite
 
 
 IFT:
   dfei_model: "None" # DFEI model which is used within IFT: "None", "DFEI_version_number"
-  use_pid: "true" # Adding pid information in DFEI model: "None", "toutputsrue", "realistic"
+  use_pid: "true" # Adding pid information in DFEI model: "None", "true", "realistic"
   cpt: None # Loading checkpoint to continue training: None, DFEI_version_number, "path.ckpt"
   node_types: [ 'tracks', 'pvs' ]  # Graph node settings
   edge_types: [ "tracks_tracks", "tracks_pvs" ]  # Graph edge settings
@@ -109,4 +109,3 @@ IFT:
       layers: [ -1, -1 ]
       norm: "graph_norm"
       dropout: 0.01
-

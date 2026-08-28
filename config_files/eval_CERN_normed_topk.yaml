@@ -1,0 +1,49 @@
+settings:
+  # Data directory for test data - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]  # 20个tst文件
+  # Model to evaluate
+  model_arch: "DFEI"
+  model: 25  # version_25 (CERN新数据训练)
+  # Hardware
+  ngpu: 1
+  ncpu: 4
+  # Preselection filters (must match training config)
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # 节点剪枝阈值 (不变)
+  node_prune_thr: 0.2
+  # ==== 方案E: per-track top-k 边选择 (替代全局 edge_prune_thr) ====
+  # edge_topk > 0 时启用: 每条径迹保留权重最高的 edge_topk 条关联边
+  edge_topk: 15
+  # 纯阈值模式仍可用 (edge_topk=0 时用下面的全局阈值)
+  edge_prune_thr: 0.9
+  # ==== 候选选择 MLP (可选) ====
+  # 非空路径时启用: 用多个 k 生成候选, 选择 MLP 打分取最优
+  # selection_mlp: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/scorer.ckpt"
+  # 选择器扫描的候选 k 值
+  edge_topk_k_list: [10, 15, 20, 30]
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "topk15"
+
+DFEI:
+  use_pid: "true"
+  cpt: 25
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]

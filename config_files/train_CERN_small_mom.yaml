@@ -1,0 +1,97 @@
+settings:
+  # 小规模消融: mass head only (基线参照) —— 20 trn / 5 tst, 快速出方向
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]  # 小规模: 20 个 trn 文件 (~2-4 min/epoch)
+  precision: 32
+  batch_size: 8
+  lr: 3e-5
+  weight_decay: 1e-5
+  epochs: 123  # 从 masshead2 best (ep113) 续训 10 epoch
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_47/checkpoints/best-epoch=113-val_combined_loss=35.677.ckpt"
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  node_prune_weight: 10.0
+  lca_weight: 10.0
+  lca_class2_weight: 2.0
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  source_head: true
+  source_loss_weight: 5.0
+  chain_lca_filter: false
+  chain_lca_conf_thr: 0.3
+  # ==== 第7个监督头: mass head (保留) ====
+  mass_head: true
+  mass_head_edge_dim: 16
+  mass_loss_weight: 1.0
+  # ==== 第9个监督头: mom head (单独测试; 无 struct head) ====
+  mom_head: true
+  mom_head_node_dim: 16
+  mom_loss_weight: 1.0
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 5 ]  # 小规模评估
+  over_write: "v38_small_mom"
+
+DFEI:
+  use_pid: "true"
+  cpt: None
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward: { layers: [ -1, 128, 128, 16 ], norm: "None", dropout: 0.01 }
+    MLP_infer: { layers: [ -1, 16, 16, 16, 1 ], norm: "None", dropout: 0.01 }
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+  decoder:
+    usage: True
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP: { layers: [ -1, -1 ], norm: "None", dropout: 0.01 }

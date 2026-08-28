@@ -1,0 +1,133 @@
+settings:
+  # Input file information - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 200 ]
+  # Training settings
+  precision: 32
+  batch_size: 8
+  lr: 5e-5  # B2+新头: 比 v32(1e-4) 更低, 避免破坏已学表征
+  weight_decay: 1e-5
+  epochs: 150
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  # Preselection filters
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  # 起点: v35 best (ep68, val 35.955; 从 v32 ep61 续训, 比 v31 提升 ~1.2)
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_35/checkpoints/best-epoch=68-val_combined_loss=35.955.ckpt"
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # 推理剪枝阈值: 训练时不用 (B2 软掩码), 评估时用. 0.7 = 适度放宽, 配合链级LCA过滤
+  edge_prune_thr: 0.7
+  node_prune_thr: 0.7
+  # ==== Loss 再平衡 (tt_edges 占 91%, node/LCA 欠投入) ====
+  node_prune_weight: 10.0   # w_node
+  lca_weight: 10.0          # w_lca
+  # ==== 源检测辅助头 (Rumor Centrality 训练化) ====
+  # RC 位于重建最后一步, 面对相对干净的信息, 其"找根"能力可作监督信号进训练
+  source_head: true         # 监督 GNN 预测 truth 链根节点 (BCE)
+  source_loss_weight: 5.0   # w_source
+  # ==== 链级 LCA 物理判据 (推理后处理, 训练时不需要, 评估矩阵中使用) ====
+  chain_lca_filter: false   # 训练时关闭; 评估时开启
+  chain_lca_conf_thr: 0.3   # 链内边平均非背景 LCA 置信度下限 (评估时扫描 0.0/0.3/0.5)
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v33_b2"
+
+DFEI:
+  use_pid: "true"
+  cpt: None  # 权重由 resume_ckpt 恢复
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "graph_norm", "None" ]
+      dropout: 0.01
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward:
+      layers: [ -1, 128, 128, 16 ]
+      norm: "None"
+      dropout: 0.01
+    MLP_infer:
+      layers: [ -1, 16, 16, 16, 1 ]
+      norm: "None"
+      dropout: 0.01
+    # ==== B2: 可微剪枝训练 (训练时软掩码模拟剪枝, 消除 train-inference gap) ====
+    # 阈值式软掩码 (弃用 top-k: 方案F 已证明 top-k 扩展在 CERN 高连通图上失控)
+    # ⚠️ 需先实现 hetero_graph_network.py 的软掩码改造, 否则 b2: true 无法运行
+    b2: true
+    b2_cut: 0.5        # 掩码阈值语义 (node_weight>0.5 ≈ 保留~10%节点, 宽松起步)
+    b2_k: 0            # 0 = 纯阈值软掩码, 不用 top-k (F 教训)
+    b2_tau_start: 1.0  # 温度起点 (软)
+    b2_tau_end: 0.1    # 温度终点 (近硬, 与推理硬阈值对齐)
+    b2_tau_epochs: 100 # 退火跨越的 epoch 数
+  decoder:
+    usage: True
+    global:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_tracks:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+    tracks_pvs:
+      layers: [ -1, 128, 128, 16 ]
+      norm: [ "None", "None" ]
+      dropout: 0.01
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP:
+      layers: [ -1, -1 ]
+      norm: "None"
+      dropout: 0.01

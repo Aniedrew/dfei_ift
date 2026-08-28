@@ -24,15 +24,78 @@ def lca_reco_matrix(graph, mode="reco"):
     return pd_matrix
 
 
-def lca_truth_matrix(graph):
-    senders = graph.truth_senders.cpu()
-    receivers = graph.truth_receivers.cpu()
+def get_final_keys(graph):
+    """逐径迹键: 旧格式用 final_keys, 新格式(MC_normed)用 tracks.part_keys,
+    公开LHCb碰撞数据无粒子键 -> 用 track 索引作为键 (保持键空间一致)"""
+    if hasattr(graph, "final_keys"):
+        return graph["final_keys"]
+    if hasattr(graph["tracks"], "part_keys"):
+        return graph["tracks"].part_keys
+    return torch.arange(graph["tracks"].x.shape[0])
 
-    truth_lca = pd.DataFrame(np.column_stack((senders, receivers)), columns=['senders', 'receivers'])
-    truth_lca['LCA_dec'] = graph["truth_y"].cpu()
-    truth_lca['LCA_id_label'] = list(map(particle_name, graph['truth_moth_ids'].cpu().numpy()))
-    truth_lca['LCA_id'] = graph['truth_moth_ids'].cpu().numpy()
-    truth_lca['TrueFullChainLCA'] = graph['lca_chain'].cpu()
+
+def get_truth_part_keys(graph):
+    """信号末态粒子键: 旧格式用 truth_part_keys, 新格式用 tracks.sig_keys,
+    公开LHCb碰撞数据无信号键 -> 用 ft==2 (b 径迹) 定义信号径迹"""
+    if hasattr(graph, "truth_part_keys"):
+        return graph["truth_part_keys"]
+    if hasattr(graph["tracks"], "sig_keys"):
+        return graph["tracks"].sig_keys
+    ft = graph["tracks"].ft
+    return torch.nonzero(ft == 2).flatten()
+
+
+def get_truth_part_ids(graph):
+    """信号末态粒子PDG: 旧格式用 truth_part_ids, 新格式用 tracks.sig_ids, 缺省填 0"""
+    if hasattr(graph, "truth_part_ids"):
+        return graph["truth_part_ids"]
+    if hasattr(graph["tracks"], "sig_ids"):
+        return graph["tracks"].sig_ids
+    return torch.zeros(len(get_truth_part_keys(graph)), dtype=torch.long)
+
+
+def lca_truth_matrix(graph):
+    if hasattr(graph, "truth_senders"):
+        # === 旧格式 (论文公开数据集 / CERN旧数据) ===
+        senders = graph.truth_senders.cpu()
+        receivers = graph.truth_receivers.cpu()
+
+        truth_lca = pd.DataFrame(np.column_stack((senders, receivers)), columns=['senders', 'receivers'])
+        truth_lca['LCA_dec'] = graph["truth_y"].cpu()
+        truth_lca['LCA_id_label'] = list(map(particle_name, graph['truth_moth_ids'].cpu().numpy()))
+        truth_lca['LCA_id'] = graph['truth_moth_ids'].cpu().numpy()
+        truth_lca['TrueFullChainLCA'] = graph['lca_chain'].cpu()
+        return truth_lca
+
+    # === 新格式 (MC_normed) / 公开LHCb碰撞数据: 从 tt 边 y + 信号径迹键构建真值LCA矩阵 ===
+    tt = graph[('tracks', 'to', 'tracks')]
+    edge_index = tt.edge_index.cpu()
+    y = tt.y.cpu()
+
+    part_keys = get_final_keys(graph).cpu()
+    sig_keys = get_truth_part_keys(graph).cpu()
+
+    # 信号径迹 -> 其在 sig_keys 中的位置 (粒子键唯一, 用于重建粒子序列)
+    pos_of_track = {}
+    for sig_pos, sk in enumerate(sig_keys.tolist()):
+        hit = (part_keys == sk).nonzero(as_tuple=False).flatten()
+        if hit.numel() > 0:
+            pos_of_track[int(hit[0])] = sig_pos
+
+    # 收集 y>0 且两端都是信号径迹的 (去重: 只取 sender<receiver)
+    rows = []
+    for a, b, yab in zip(edge_index[0].tolist(), edge_index[1].tolist(), y.tolist()):
+        if yab > 0 and a < b and a in pos_of_track and b in pos_of_track:
+            rows.append((pos_of_track[a], pos_of_track[b], int(yab)))
+    truth_lca = pd.DataFrame(rows, columns=['senders', 'receivers', 'LCA_dec'])
+    if truth_lca.empty:
+        return truth_lca
+    # 去重 (公开LHCb碰撞数据 tt 边可能含重复对, 否则下游 multi-index 赋值会报错)
+    truth_lca = truth_lca.drop_duplicates(subset=['senders', 'receivers'], keep='first')
+    # 母粒子名: 新格式只存顶层B(不在LCA矩阵里逐对给出), 这里用符号代替(不影响聚类/分类)
+    truth_lca['LCA_id_label'] = ""
+    truth_lca['LCA_id'] = 0
+    truth_lca['TrueFullChainLCA'] = truth_lca['LCA_dec'].astype(int)
     return truth_lca
 
 

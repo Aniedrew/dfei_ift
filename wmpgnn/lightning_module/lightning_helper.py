@@ -48,6 +48,34 @@ def init_logs(configs, mode="train"):
                     log[f"sig_edges_score_{i}"] = torch.tensor([], dtype=torch.float16)
                     log[f"bkg_edges_score_{i}"] = torch.tensor([], dtype=torch.float16)
 
+        # 第5个监督头: 候选衰变链选择 loss 日志 (train 时由 shared_step 写入)
+        if loss_config.get("selection_mlp", ""):
+            log["chain_select_loss"] = []
+
+        # 第6个监督头: 源检测 (Rumor Centrality 训练化) loss 日志
+        if loss_config.get("source_head", False):
+            log["source_loss"] = []
+
+        # 方案5: 链内 LCA 一致性辅助损失日志
+        if loss_config.get("chain_lca_loss", False):
+            log["chain_lca_loss"] = []
+
+        # 方案7b: 可训练 PV 分簇头 (pv_cluster_head) loss 日志
+        if loss_config.get("pv_cluster", False):
+            log["pv_cluster_loss"] = []
+
+        # 第7个监督头: 边级不变质量回归 (输出侧物理监督) loss 日志
+        if loss_config.get("mass_head", False):
+            log["mass_loss"] = []
+
+        # 第8个监督头: 节点结构监督 (depth + RC 回归) loss 日志
+        if loss_config.get("struct_head", False):
+            log["struct_loss"] = []
+
+        # 第9个监督头: 节点级动量回归 (mom_head) loss 日志
+        if loss_config.get("mom_head", False):
+            log["mom_loss"] = []
+
         if  loss_config["pv_asso"]:
             log["tpv_edges_loss"] = []
             if mode == "test":
@@ -73,7 +101,11 @@ def init_loss(device):
             "tt_edges": torch.tensor(0., device=device),
             "tPV_edges": torch.tensor(0., device=device),
             "ft_nodes": torch.tensor(0., device=device),
-            "pv_asso": torch.tensor(0., device=device)}
+            "pv_asso": torch.tensor(0., device=device),
+            "chain_select": torch.tensor(0., device=device),
+            "source": torch.tensor(0., device=device),
+            "chain_lca": torch.tensor(0., device=device),
+            "pv_cluster": torch.tensor(0., device=device)}
     return loss
 
 

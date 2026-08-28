@@ -68,6 +68,7 @@ class ChunkDataset(IterableDataset):
         return torch.tensor(groups)
 
     def _load_chunk(self, chunk_number, mode="loading"):
+        import time
         nevnts = 800
         if self.mode == "validation" or self.mode == "test":
             nevnts = 200
@@ -75,12 +76,16 @@ class ChunkDataset(IterableDataset):
         chunk = self.chunk_index[chunk_number]
         files = [self.file_paths[i] for i in chunk]
         desc = f"Loading {self.mode} chunk {chunk_number + 1}/{self.n_chunks} ({self.files_per_chunk} files, ~{self.files_per_chunk * nevnts} events)"
+        # 诊断日志: 记录加载起点, 便于定位卡死发生在哪个 chunk
+        print(f"[chunk] {time.strftime('%H:%M:%S')} start {desc}", flush=True)
         if mode == "loading":
             dataset = []
             load_dataset_part = partial(load_dataset, configs=self.configs, mode=mode)
             with ThreadPool(processes=self.configs["settings"]["ncpu"]) as pool:
-                for r in tqdm(pool.imap(load_dataset_part, files), total=len(files), desc=desc, leave=False):
+                for fi, r in enumerate(tqdm(pool.imap(load_dataset_part, files), total=len(files), desc=desc, leave=False)):
                     dataset.extend(r)
+                    print(f"[chunk] {time.strftime('%H:%M:%S')} file {fi + 1}/{len(files)} loaded ({len(r)} events)", flush=True)
+            print(f"[chunk] {time.strftime('%H:%M:%S')} done chunk {chunk_number + 1} ({len(dataset)} events)", flush=True)
             return dataset
         elif mode == "weights":
             weights = {}
@@ -132,7 +137,8 @@ class ChunkDataset(IterableDataset):
 
     def get_weights(self):
         weights = {}
-        for i in range(10):
+        n_chunks = self.chunk_index.shape[0]
+        for i in range(min(10, n_chunks)):
             weights[i] = self._load_chunk(i, mode="weights")
         return weights
 
@@ -193,13 +199,16 @@ def get_trn_val_loaders(_configs) -> ChunkLoader:
     for sample, files in nfiles.items():
         path_dict[sample] = sorted(glob.glob(f'{data_dir}/{sample}/trn_data_*'))[:files]
 
-    # Number of chunks definition and safeguard for the files per chunk to be less than 8
+    # Number of chunks definition and safeguard for the files per chunk
+    # Lower threshold (= fewer files per chunk) reduces per-chunk memory footprint.
+    # Changed from 8 to 2 to support datasets with large per-file size (e.g. public LHCb data).
     min_files\
         = min(len(v) for v in path_dict.values() if len(v) > 0)
     total_files = sum(len(v) for v in path_dict.values())
     num_chunks = np.ceil(min_files / num_workers).astype(int)
-    # Safeguard: increase chunks until files_per_chunk < 8, this can be adapted
-    while total_files / num_chunks >= 8:
+    # Safeguard: increase chunks until files_per_chunk < threshold
+    files_per_chunk_thr = 2
+    while total_files / num_chunks >= files_per_chunk_thr:
         num_chunks += num_workers
     print(f"Number of chunks: {num_chunks}")
     print(f"Files per chunk: {np.ceil(total_files / num_chunks).astype(int)}")
@@ -225,7 +234,7 @@ def get_tst_loader(_configs) -> ChunkLoader:
         path_dict["testing"].append(sorted(glob.glob(f'{data_dir}/{sample}/tst_data_*'))[:files])
     path_dict["testing"] = sum(path_dict["testing"], [])
     # Each file is saved individually in a chunk
-    batch_size = 512  # increased bs possible during testing
+    batch_size = 32  # Reduced from 128 to avoid GPU OOM (10.57 GB limit, public data has ~150 tracks/evt)
     tst_dataset = ChunkDataset(path_dict, _configs, mode="test", n_chunks=len(path_dict["testing"]))
 
     return ChunkLoader(_configs, tst_dataset=tst_dataset, batch_size=batch_size, num_workers=2)
