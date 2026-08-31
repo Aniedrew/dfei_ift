@@ -25,6 +25,15 @@
 | v40 | PV 分簇：可训练 cluster 头（训练侧切子图） | v38 ep101 | 见下文（发散失败） | 84.9（发散） | 28.79%（发散权重） |
 | v41 | PV 分簇（课程过渡修复版，200files） | v38 ep101 | 3.2h/epoch + val 不降被停 | 125.8（不降） | — |
 | v42 | PV 分簇：小规模快速验证（50files/48ep） | v38 ep101 | 见下文 | 118.2 | **26.28%（伤模型）** |
+| v45 | 公开数据：v38 栈首次训练 | 从头（公开） | 公开 LHCb 数据（无 PID） | 33.22（ep51） | 9.3%（ep66 中断时评估） |
+| v46 | masshead v1（第7头：边级 ππ 质量） | v38 | mass head（未归一化） | 38.946（ep106） | — |
+| **v47** | **⭐ masshead2（mass head 改良）** | v38 | log10 归一化 + 掩码修复 | 35.677（ep113） | **32.7%** |
+| v48 | 组合训练 mass+struct+mom | v38 | 三头同时叠 | — | All 50.6%（下降，触发消融） |
+| v49 | 公开数据续训 | v45 ep66 | ep66→88（含 class weight 修复） | 34.579（ep88） | — |
+| v50 | 消融 base（仅 mass，对照） | v47 ep113 | 5文件×10ep 小评估 | — | 29.67%（小口径） |
+| v51 | 消融 mom（+mom head） | v47 ep113 | 同上 | — | 30.46%（小口径） |
+| v52 | 消融 struct（+struct head） | v47 ep113 | 同上 | — | 30.46%（小口径） |
+| v53 | asym 扩展（tracks 32 / tt 边 24） | 从头 | 不对称 latent 维度 | 49.386（ep10，**训练中**） | — |
 
 ---
 
@@ -111,6 +120,41 @@
 - 后续：**推理分簇单独验证完成（2026-08-24）**：v38 ckpt + pv_asso 头分簇，20 文件 10038 事件、0 回退，Perfect **28.70%**（vs v38 基线 29.26%，无显著差异，-0.56pp）。1B 34.18%、2B 20.98%，part_reco 异常低（3.29%，簇间链合并问题）。
 - **最终结论：PV 分簇路线整体关闭**（训练侧伤模型 + 推理侧无效）。v38 全图方案（29.26%）为当前最优，后续优化另寻方向。
 
+### v45 —— 公开数据：v38 栈首次训练（9995727）
+- **公开 LHCb 碰撞数据**（论文 DFEI, arXiv:2304.08610，Run3 模拟，`converted_LHCbcollision`），v38 算法栈（b2_cut0.85 + cl2 加权 2.0 + chain_lca_ce + source head）。
+- 公开数据与 CERN 差异大：**无 PID 信息**（use_pid: None）、LCAG class2/3 边数量相差 4-14 倍。
+- **作业系统中断**：ep66 被 held。best 是 ep51（val 33.22）。中断时用 ep66 权重评估 Perfect 仅 9.3%（非最优权重）。
+
+### v46 —— masshead v1（第7个监督头：边级 ππ 不变质量回归）
+- **resume v38**，新增 `mass_head`：对 tt 边做 log(m_MeV) 回归（SmoothL1），掩码 px≈py≈pz≈-1 哨兵边。目的：逼边表征携带粒子质量信息（输出侧物理监督，保持端到端）。
+- best ep106（val 38.946）。早期版本（未归一化目标）。
+
+### v47 —— ⭐ masshead2（mass head 改良版）
+- mass head 改良：**log10 归一化目标 + 掩码修复**。best ep113（val 35.677）。
+- **结果（全量 20 文件）**：AllParticles **52.1→55.9**（+3.8pp）、Perfect **29.3→32.7**（+3.4pp）、LCAG class2 **44.7→51.1**（+6.4pp）——**当前 CERN 最优版本**。
+- **PhyIP 验证**：冻结主干 + Ridge 探针，边表征的质量信息线性可读性 R² 从 0.003 → **0.93**，证明输出侧监督成功把物理量压进 latent space。
+
+### v48 —— 组合训练 mass+struct+mom（三头叠加，失败）
+- mass + struct + mom 三个头同时叠加训练。AllParticles 掉到 **50.6%**（< v47 55.9）。
+- 判断为**监督头叠加竞争**（同一条边/节点表征被多个头拉扯），触发 v50-v52 单头消融定位。
+
+### v49 —— 公开数据续训（ep66→88）
+- **resume v45 ep66**（含 class weight bug 修复：`LCA__weights` → `LCA_weights`），lr 1e-3，gacc 16。
+- 训练正常推进，best **ep88（val 34.579）**，已远优于 ep51（33.22→34.579 为 loss 更低）。
+- ep88 评估阶段因**超出 32GB cgroup 内存限制**被 held（实测 31848MB）→ 已提高内存限制（64GB）重提续训至 100。
+
+### v50 / v51 / v52 —— 小规模单头消融（定位叠加竞争）
+- **设计**：从 masshead2 best（v47 ep113）续训 10 epoch（20 训练文件），5 文件小评估，仅加一个头：
+  - **v50 base**（仅 mass，对照）：AllParticles 51.41 / Perfect 29.67
+  - **v51 +mom head**（节点动量回归，第9头）：AllParticles **53.83**（+2.4）/ Perfect 30.46（+0.8）
+  - **v52 +struct head**（节点 depth + RC 双重回归，第8头）：AllParticles **54.50**（+3.1）/ Perfect 30.46（+0.8）
+- **结论**：struct head 单头效果最好（All +3.1），mom 次之（+2.4），均正贡献 → **组合训练 v48 的下降是叠加竞争，不是单个头无效**。后续在 asym 版本上叠加 struct+mom 前需处理竞争（如调权重/分阶段）。
+
+### v53 —— asym 扩展训练（进行中）
+- **不对称 latent 维度**：tracks 节点 32 维 / tracks_tracks 边 24 维（其余 16），物理自由度分析依据（节点 ~12-14 自由度 + 多监督头竞争，16 贴下限）。
+- **从头训练**（结构变化），v38 算法栈 + mass head，150 epoch，~1h/epoch（预计 ~6 天）。
+- 2026-08-30 状态：ep10/150（best val 49.386，从头训练初期正常）。**验证目标**：维度扩展本身是否带来增益；struct/mom 待其完成后下一版叠加。
+
 ---
 
 ## 三、关键指标对比（thr0.9 同口径）
@@ -132,6 +176,9 @@
 - **方案 F（seed-expand 连通性保留剪枝）**：从种子节点扩展 top-k 边。在 CERN 高连通图上失控（9→73 节点，约等于不剪枝），Perfect 仅 ~0.9%。**方法不成立，已弃用**（程序逻辑正确）。
 - **chain_lca_record 评估（v36）**：记录每条链的 LCA 置信度（不过滤）。阈值扫描结论：**chain_lca_conf / class2_frac 单判据和联合判据均无效**——真链/假链置信度分布重叠大（Perfect 链 med 0.635 vs 失败链 0.542），任何阈值都同步误杀真链。待 v37/v38（训练了 chain_lca_loss/ce）的 record 数据再验证。
 - **edge top-k / 选择 MLP（方案E）**：per-track top-k 边选择 + 候选链打分（CandidateScorer），代码已实现但 scorer 未正式训练启用。
+- **链判据 AUC 评估（2026-08-28，masshead2 上）**：正样本 = truth 链，负样本 = 剪枝分量 + 随机组合。AUC **0.90**（全负样本）/ 0.78（仅剪枝分量）；最强单特征 `struct_conf` AUC 0.956。
+- **mom head（第9头：节点动量回归）**：PhyIP 探针显示节点表征无动量信息（R²≈0，graph_norm+ReLU 打散）→ 加 mom head 修复（v51 消融验证正贡献）。
+- **公开数据 vs CERN 差异**（2026-08-28）：公开数据 LCAG class2/3 边数相差 4-14 倍、无 PID，v38 算法栈需适配后才能公平对比论文结果。
 
 ---
 

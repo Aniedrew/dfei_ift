@@ -1,24 +1,19 @@
 settings:
-  # Input file information - 公开LHCb碰撞数据 (论文 DFEI, arXiv:2304.08610, Run3模拟)
+  # 公开LHCb碰撞数据 (论文 DFEI, arXiv:2304.08610)
   data_dir: "/lzufs/user/guoqingxiang/DFEI_data/converted_LHCbcollision"
   sample: [ "00342442_inclusive" ]
-  nfiles: [ 50 ]  # 50个trn文件
-  # Training settings
-  precision: 32  # FP32 (公开数据 FP16 出 NaN)
-  batch_size: 1  # FP32 公开数据 (~150 tracks/evt) 需 batch=1
-  lr: 1e-3
-  weight_decay: 1e-5
-  epochs: 100  # 绝对 epoch; 从 ep66 续训 -> 34 个新 epoch
-  gacc: 16  # 有效 batch 16
+  nfiles: [ 50 ]  # 50 个 tst 文件
+  # Model to evaluate
+  model_arch: "DFEI"
+  model: 49  # 公开数据续训 (version_49); 自动加载 val 最小的 best ckpt = ep73 (val 33.434, 最优)
+  # Hardware
   ngpu: 1
-  ncpu: 2
-  # Preselection filters
+  ncpu: 4
+  # Preselection filters (must match training config)
   graph_mode: "None"
   node_sel: "true"
   pv_model: "None"
   calibration: False
-  # 续训起点: 上次作业在 ep88 评估阶段被 held (内存超 32GB); best 是 ep88 (val 34.579)
-  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_49/checkpoints/best-epoch=88-val_combined_loss=34.579.ckpt"
 
 inference:
   LCA: true
@@ -29,31 +24,18 @@ inference:
   edge_prune_weights: true
   pv_asso: true
   pv_asso_weights: true
-  # 推理剪枝阈值 (与 CERN v38 同口径)
+  # 与训练同口径: thr 0.9
   edge_prune_thr: 0.9
   node_prune_thr: 0.9
-  # ==== v38 算法栈 ====
-  node_prune_weight: 10.0
-  lca_weight: 10.0
-  lca_class2_weight: 2.0
-  chain_lca_loss: true
-  chain_lca_loss_weight: 2.0
-  chain_lca_margin: 0.3
-  chain_lca_ce: true
-  chain_lca_ce_weight: 1.0
-  source_head: true
-  source_loss_weight: 5.0
-  chain_lca_filter: false
-  chain_lca_conf_thr: 0.3
 
 evaluate:
   sample: [ "00342442_inclusive" ]
-  nfiles: [ 50 ]  # 50 个 tst 文件
-  over_write: "v38_public_resume"
+  nfiles: [ 50 ]
+  over_write: "v38_public_ep88"
 
 DFEI:
-  use_pid: "None"  # 公开数据不含 PID 信息
-  cpt: None  # 权重由 resume_ckpt 恢复
+  use_pid: "None"
+  cpt: 49  # version number, will be overwritten by settings.model
   node_types: [ 'tracks', 'pvs' ]
   edge_types: [ "tracks_tracks", "tracks_pvs" ]
   encoder:
@@ -94,10 +76,6 @@ DFEI:
       dropout: 0.01
     b2: true
     b2_cut: 0.85
-    b2_k: 0
-    b2_tau_start: 1.0
-    b2_tau_end: 0.1
-    b2_tau_epochs: 100
   decoder:
     usage: True
     global:

@@ -63,7 +63,7 @@ if [ $PREFLIGHT_RC -ne 0 ]; then
     echo "[RETRY] 第 $N/$MAX_RETRY 次, sleep ${RETRY_SLEEP}s 后重排..."
     sleep $RETRY_SLEEP
     echo "[RETRY] 重新提交 submit_train_public_v38_resume.sh (原作业 ${_CONDOR_IHEP_JOB_ID:-unknown}, GPU ${CUDA_VISIBLE_DEVICES})"
-    hep_sub submit_train_public_v38_resume.sh -g ghigh -gpu 1 -cpu 4 -m 32000 -wt long -o logs/train_public_v38_resume.out -e logs/train_public_v38_resume.err
+    hep_sub submit_train_public_v38_resume.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long -o logs/train_public_v38_resume.out -e logs/train_public_v38_resume.err
     echo "[RETRY] 已重提, 本次退出"
     exit 0
   fi
