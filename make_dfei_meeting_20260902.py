@@ -256,13 +256,13 @@ add_flow_text(s, 7.2, 6.9, 2.6, 0.35, 'inference (no mask): keep if w ≥ 0.9', 
 s = new_slide(5)
 add_title_bar(s, 'Part 1 — LCA Supervision Adjustment', 'Class-2 weighting and in-chain consistency, refined by experiments')
 add_bullets(s, [
-    'Class-2 (same-mother) edges are the structural bottleneck:',
-    ('weight 3.0 (v37) over-weighted → class1 dropped; settled at 2.0 (v38)', 1),
-    'In-chain LCA consistency, supervised only on truth-chain edges:',
-    ('v37: hinge loss — keep chain edges confident (margin 0.3)', 1),
-    ('v38: + cross-entropy on chain-edge classes — structural edges are ~0.1% of all edges; direct CE prevents class0 dilution', 1),
+    'Class-2 (same-mother) edges are the structural bottleneck: weight 3.0 (v37) over-weighted → 2.0 (v38)',
+    'In-chain consistency, on truth-chain edges only:',
+    ('hinge (v37): keep chain edges confident (margin 0.3)', 1),
+    ('chain-CE (v38): direct cross-entropy on chain-edge classes — structural edges are ~0.1% of all edges', 1),
     'Net effect of Part 1 (v31 → v38): PerfectReco 23.9% → 29.3%',
-], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.6), size=BODY_SM)
+], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.5), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_curves.png', Inches(0.8), Inches(3.95), width=Inches(11.9))
 
 # ============ S6 Part 2: physics supervision concept ============
 s = new_slide(6)
