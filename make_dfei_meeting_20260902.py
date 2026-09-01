@@ -218,11 +218,13 @@ add_pic(s, FIG + '/progress_line_v31_v47.png', Inches(7.0), Inches(2.3), width=I
 s = new_slide(3)
 add_title_bar(s, 'Outline', 'Organized by theme, not by chronology')
 add_bullets(s, [
-    'Part 1 — Supervision and training–inference alignment',
-    ('differentiable pruning with annealing · class-2 weighting · in-chain LCA consistency', 1),
-    'Part 2 — Supervising representations with physics (source / mass / struct / mom heads)',
-    'Part 3 — Controlled failures and their lessons',
-    'Part 4 — Ongoing attempts (wider latent space, and others)',
+    'Part 1 — Differentiable Pruning with Annealing',
+    ('training–inference alignment: soft mask w_eff = w·σ((w−cut)/τ), τ annealed', 1),
+    'Part 2 — Rewarding the Chain',
+    ('why chains die · the rewards (hinge, chain-CE) · evidence it works', 1),
+    'Part 3 — Supervising Representations with Physics (source / mass / struct / mom)',
+    'Part 4 — Controlled Failures and Their Lessons',
+    'Part 5 — Ongoing Attempts',
 ], Inches(0.9), Inches(1.7), Inches(11.5), Inches(4.8), size=BODY)
 
 # ============ S4 Part 1: differentiable pruning ============
@@ -252,22 +254,50 @@ add_flow_arrow(s, 'down', 11.6, 6.4, 0.3, 0.4, color=BLUE)
 add_flow_box(s, 10.3, 6.75, 2.7, 0.4, 'pruning loss vs truth (BCE)\n(mask makes it differentiable)', fill=LIGHT, line=BLUE, size=8)
 add_flow_text(s, 7.2, 6.9, 2.6, 0.35, 'inference (no mask): keep if w ≥ 0.9', size=9, color=GRAY, italic=True)
 
-# ============ S5 The problem: class-0 dilution ============
+# ============ S5 Part 2: why chains die (1/2): class imbalance ============
 s = new_slide(5)
-add_title_bar(s, 'Part 1 — The Problem: Class-0 Dilution', 'Why the standard classifier fails on chain structure')
+add_title_bar(s, 'Part 2 — Why Chains Die (1/2): The Class Imbalance', 'Structural edges are ~0.1% and the hardest to classify')
+add_bullets(s, [
+    'class 0 (background) is 99.9% of edges; each structural class is ~0.04%',
+    'The GNN is weakest exactly on the rarest classes — especially class 2 (sister)',
+    'Per-class accuracy: worst exactly on the rare structural classes',
+], Inches(0.7), Inches(1.7), Inches(6.0), Inches(4.6), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_imbalance_dist.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
+add_pic(s, FIG + '/chain_lca_imbalance_acc.png', Inches(7.0), Inches(4.2), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: without extra supervision, the classifier barely learns classes 1/2/3 — the rewards exist to fix this',
+              size=12, color=GRAY, italic=True)
+
+# ============ S6 Part 2: why chains die (2/2): one misclassified edge ============
+s = new_slide(6)
+add_title_bar(s, 'Part 2 — Why Chains Die (2/2): One Misclassified Edge', 'Chain survival needs every structural edge correct')
+add_bullets(s, [
+    'At inference, an edge the classifier calls class 0 is pruned',
+    'If ANY structural edge of a chain is misclassified, the whole chain dies',
+    'The rewards (next slides) supervise truth-chain edge classes directly → chains survive',
+], Inches(0.7), Inches(1.7), Inches(6.0), Inches(4.6), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_before.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
+add_pic(s, FIG + '/chain_lca_after.png', Inches(7.0), Inches(4.15), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: chain survival depends on every structural edge being classified correctly',
+              size=12, color=GRAY, italic=True)
+
+# ============ S7 Part 2: root cause — class-0 dilution ============
+s = new_slide(7)
+add_title_bar(s, 'Part 2 — The Root Cause: Class-0 Dilution', 'Why the standard classifier fails on chain structure')
 add_bullets(s, [
     'class 0 (background) is 99.9% of edges; structural classes 1/2/3 together are ~0.1%',
     'The main LCAG loss is a global cross-entropy over every edge → its gradient is ~99.9% "predict background"',
     'Consequence: rare structural edges are undertrained → misclassified → chains break',
-    'Fixes in Part 1: class-2 weighting (3.0 → 2.0), then hinge (v37), then chain-CE (v38)',
+    'The fix: reward the chain — class-2 weighting (3.0 → 2.0), then hinge (v37), then chain-CE (v38)',
 ], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.2), size=BODY_SM)
 add_pic(s, FIG + '/chain_lca_dilution.png', Inches(7.0), Inches(2.6), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
               'Implication: with ~1000 background edges per structural edge, the global CE alone cannot teach the model classes 1/2/3',
               size=12, color=GRAY, italic=True)
 
-# ============ S6 Reward 1 (v37): hinge ============
-s = new_slide(6)
+# ============ S8 Part 2: Reward 1 (v37): hinge ============
+s = new_slide(8)
 add_title_bar(s, 'Reward 1 (v37): Hinge — Confidence Bonus', 'A training-only reward that pays out when chain edges are confidently classified')
 add_bullets(s, [
     'It is a loss term that behaves like a reward: be confident on a chain edge → pay nothing',
@@ -282,15 +312,15 @@ add_flow_text(s, 0.8, 6.9, 11.8, 0.4,
               'Implication: hinge is a training-only confidence bonus on chain edges — confidence = max(pk), not the pruning weight w',
               size=12, color=GRAY, italic=True)
 
-# ============ S7 Reward 2 (v38): chain cross-entropy ============
-s = new_slide(7)
+# ============ S9 Part 2: Reward 2 (v38): chain cross-entropy ============
+s = new_slide(9)
 add_title_bar(s, 'Reward 2 (v38): Chain-CE — Correctness Bonus', 'A training-only reward for being the RIGHT class, on chain edges')
 add_bullets(s, [
     'CE = −log(p_true): p_true is the probability the model assigns to the edge’s TRUE class',
     'Right and confident (p_true → 1) → penalty ≈ 0; unsure or wrong → penalty large',
     'Chain-CE (v38): added ON TOP of the hinge, paid on truth-chain edges (classes 1/2/3) → direct, undiluted gradient',
     'v37 → v38 (weight 2.0 + chain-CE + cut 0.85): PerfectReco 27.3% → 29.3%',
-    'Net effect of Part 1 (v31 → v38): 23.9% → 29.3%',
+    'Net effect of Part 2 (v31 → v38): 23.9% → 29.3%',
 ], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.3), size=BODY_SM)
 add_pic(s, FIG + '/chain_lca_ce_curve.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
 add_pic(s, FIG + '/chain_lca_ce_where.png', Inches(7.0), Inches(4.15), width=Inches(5.9))
@@ -298,49 +328,40 @@ add_flow_text(s, 0.8, 6.9, 11.8, 0.4,
               'Implication: same function as the global CE — the reward is WHERE it is paid (chain edges only)',
               size=12, color=GRAY, italic=True)
 
-# ============ S8 Why chains die (1/2): class imbalance ============
-s = new_slide(8)
-add_title_bar(s, 'Why Chains Die (1/2): The Class Imbalance', 'Structural edges are ~0.1% and the hardest to classify')
-add_bullets(s, [
-    'class 0 (background) is 99.9% of edges; each structural class is ~0.04%',
-    'The GNN is weakest exactly on the rarest classes — especially class 2 (sister)',
-    'Per-class accuracy: worst exactly on the rare structural classes',
-], Inches(0.7), Inches(1.7), Inches(6.0), Inches(4.6), size=BODY_SM)
-add_pic(s, FIG + '/chain_lca_imbalance_dist.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
-add_pic(s, FIG + '/chain_lca_imbalance_acc.png', Inches(7.0), Inches(4.2), width=Inches(5.9))
-add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
-              'Implication: without extra supervision, the classifier barely learns classes 1/2/3 — the chain losses exist to fix this',
-              size=12, color=GRAY, italic=True)
-
-# ============ S9 Why chains die (2/2): one misclassified edge ============
-s = new_slide(9)
-add_title_bar(s, 'Why Chains Die (2/2): One Misclassified Edge', 'Chain-CE keeps every structural edge correct')
-add_bullets(s, [
-    'At inference, an edge the classifier calls class 0 is pruned',
-    'If ANY structural edge of a chain is misclassified, the whole chain dies',
-    'Chain-CE (v38) supervises truth-chain edge classes directly → chains survive',
-], Inches(0.7), Inches(1.7), Inches(6.0), Inches(4.6), size=BODY_SM)
-add_pic(s, FIG + '/chain_lca_before.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
-add_pic(s, FIG + '/chain_lca_after.png', Inches(7.0), Inches(4.15), width=Inches(5.9))
-add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
-              'Implication: chain survival depends on every structural edge being classified correctly — that is what the hinge + chain-CE provide',
-              size=12, color=GRAY, italic=True)
-
-# ============ S10 Part 2: physics supervision concept ============
+# ============ S10 Part 2: the strategy works ============
 s = new_slide(10)
-add_title_bar(s, 'Part 2 — Supervising Representations with Physics', 'One common idea behind several heads')
+add_title_bar(s, 'Part 2 — The Strategy Works', 'Rewards raise PerfectReco and per-class accuracy')
+add_bullets(s, [
+    'Reward line builds on Part 1 (pruning, v36: 26.3%)',
+    ('hinge (v37): 26.3% → 27.3%', 1),
+    ('chain-CE (v38): 27.3% → 29.3%', 1),
+    'Per-class accuracy (v31 → v38): class1 67.8 → 76.8; class2 41.3 → 47.9',
+    'Same evaluation: CERN MC, thr 0.9, 20 test files',
+], Inches(0.7), Inches(1.6), Inches(6.0), Inches(4.6), size=BODY_SM)
+add_pic(s, FIG + '/reward_results.png', Inches(7.0), Inches(2.4), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: the rewards directly improve the structural classes the global CE ignores — chains survive more often',
+              size=12, color=GRAY, italic=True)
+
+# ============ S11 Part 3: physics supervision concept ============
+s = new_slide(11)
+add_title_bar(s, 'Part 3 — Supervising Representations with Physics', 'One common idea behind several heads')
 add_bullets(s, [
     'Idea: physical / structural quantities are data-intrinsic; supervise the representation with them, keeping the model end-to-end',
-    'Heads sharing this theme:',
+    'The head zoo: one shared backbone, many supervised targets',
     ('source head (v36) — Rumor-Centrality root; early instance of the same idea', 1),
     ('mass head — edge-level log10(m_ππ)', 1),
     ('structure head — node depth + RC value', 1),
     ('momentum head — node normalized momentum', 1),
     'Verification: linear probes on the frozen backbone (Ridge regression)',
-], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.4), size=BODY_SM)
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.4), size=BODY_SM)
+add_pic(s, FIG + '/head_zoo.png', Inches(7.0), Inches(2.2), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: the backbone must represent the physics — the heads only tell it what to keep',
+              size=12, color=GRAY, italic=True)
 
-# ============ S11 mass head ============
-s = new_slide(11)
+# ============ S12 Part 3: mass head ============
+s = new_slide(12)
 add_title_bar(s, 'The Mass Head: Main Result', 'Edge-level regression of log10(m_ππ)')
 add_bullets(s, [
     'Same-mother track pairs sit near resonance masses → the edge representation must encode sister relations',
@@ -349,52 +370,68 @@ add_bullets(s, [
     ('PerfectReco 29.3% → 32.7%  (+3.4pp)', 1),
     ('AllParticles 52.1% → 55.9%  (+3.8pp)', 1),
     ('LCAG class2 44.7% → 51.1%  (+6.4pp)', 1),
-], Inches(0.8), Inches(1.3), Inches(6.6), Inches(5.6), size=BODY_SM)
-add_pic(s, V47 + '/NN_edges_2_roc.png', Inches(7.6), Inches(1.7), width=Inches(5.2))
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.3), size=BODY_SM)
+add_pic(s, V47 + '/NN_edges_2_roc.png', Inches(7.0), Inches(1.7), width=Inches(5.9))
+add_flow_text(s, 7.0, 5.75, 5.9, 0.9,
+              'ROC — LCAG class-2 (sister) edge detection, v47 masshead2, 20 test files. Mass supervision moves sister information into the edge representation.',
+              size=12, color=GRAY)
+add_flow_text(s, 0.8, 6.9, 11.8, 0.4,
+              'Implication: supervising a physical target improved the hardest structural class — and the whole reconstruction',
+              size=12, color=GRAY, italic=True)
 
-# ============ S12 struct + mom ============
-s = new_slide(12)
+# ============ S13 Part 3: struct + mom ============
+s = new_slide(13)
 add_title_bar(s, 'Structure and Momentum Heads', 'Node-level supervision of tree position and momentum')
 add_table(s, [
-    ['Head', 'Target', 'Ablation (5-file eval)', 'Notes'],
-    ['baseline', 'mass only', 'All 51.4 / Perfect 29.7', ''],
-    ['+ struct', 'depth + RC', 'All 54.5 (+3.1) / Perfect 30.5 (+0.8)', 'best single head'],
-    ['+ mom', 'normalized p', 'All 53.8 (+2.4) / Perfect 30.5 (+0.8)', 'fixes node R²≈0'],
-], Inches(0.8), Inches(1.5), Inches(11.8), Inches(2.8), font_size=18)
+    ['Head', 'Target', 'All / Perfect (5-file eval)'],
+    ['baseline', 'mass only', '51.4 / 29.7'],
+    ['+ struct', 'depth + RC', '54.5 / 30.5 (+0.8) — best'],
+    ['+ mom', 'normalized p', '53.8 / 30.5 (+0.8)'],
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(1.9), font_size=15)
 add_bullets(s, [
-    'Struct: depth (BFS to chain centroid) + RC value — node position in the tree; class3 60.8→63.2',
+    'Struct: depth (BFS to chain centroid) + RC value — where the node sits in the tree (see right); class3 60.8→63.2',
     'Mom: motivated by a probe — node representations were linearly unreadable for momentum (R² ≈ 0)',
     'Lesson: probe first, find the missing quantity, then supervise it',
-], Inches(0.8), Inches(4.5), Inches(11.8), Inches(2.6), size=BODY_SM)
+], Inches(0.7), Inches(3.7), Inches(6.0), Inches(3.0), size=BODY_SM)
+add_pic(s, FIG + '/struct_mom_tree.png', Inches(7.0), Inches(2.0), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: depth/RC label the node’s role in the tree — the struct head forces the node representation to encode it',
+              size=12, color=GRAY, italic=True)
 
-# ============ S13 probe ============
-s = new_slide(13)
+# ============ S14 Part 3: probe verification ============
+s = new_slide(14)
 add_title_bar(s, 'Verification: Linear Probes on the Frozen Backbone', 'Ridge regression; R² of the physical quantity')
-add_table(s, [
-    ['Probe', 'v38', 'masshead2'],
-    ['edge repr → log10(m_ππ)', 'R² = 0.003', 'R² = 0.930'],
-    ['node repr → p (px/py/pz)', 'R² ≈ 0', 'R² ≈ 0'],
-], Inches(0.8), Inches(1.5), Inches(8.5), Inches(1.8), font_size=20)
 add_bullets(s, [
+    'Probe: fit a linear regressor on the frozen backbone — can the quantity be read off?',
+    'Edge repr → log10(m_ππ): R² 0.003 → 0.930 (masshead2)',
+    'Node repr → p (px/py/pz): R² ≈ 0 both before and after',
     'Mass supervision moves mass information into the edge representation — confirmed end-to-end',
     'Nodes remain unreadable for momentum → addressed by the momentum head (to be re-probed)',
-], Inches(0.8), Inches(3.7), Inches(11.8), Inches(2.8), size=BODY_SM)
+], Inches(0.7), Inches(1.6), Inches(6.0), Inches(4.8), size=BODY_SM)
+add_pic(s, FIG + '/probe_r2.png', Inches(7.0), Inches(2.4), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: the probe is the check that supervision actually wrote the physics into the representation',
+              size=12, color=GRAY, italic=True)
 
-# ============ S14 controlled failures ============
-s = new_slide(14)
-add_title_bar(s, 'Part 3 — Controlled Failures and Their Lessons')
+# ============ S15 Part 4: controlled failures ============
+s = new_slide(15)
+add_title_bar(s, 'Part 4 — Controlled Failures and Their Lessons', 'Two failed lines, two lessons')
 add_bullets(s, [
     'PV subgraph training (v39-42): training on per-PV subgraphs while inference runs on the full graph',
     ('full-graph ability degraded: class1 76.8% → 56.4%; line closed', 1),
     'Combined mass + struct + mom (v48): aux losses (0.877) exceed the main task (0.559)',
     ('reconstruction dropped 5pp although LCAG did not — backbone pulled toward auxiliary tasks', 1),
     ('resolution: lower aux weights — mom 0.2, struct 0.3', 1),
-    'Lessons: train/infer graph mismatch is fatal; gradient balance between heads must be explicit',
-], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.4), size=BODY_SM)
+    'Lessons: train/infer graph mismatch is fatal; gradient balance must be explicit',
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.4), size=BODY_SM)
+add_pic(s, FIG + '/v48_failure.png', Inches(7.0), Inches(2.2), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: the v48 failure shows why the head zoo needs explicit gradient balance — and why we ablate before stacking',
+              size=12, color=GRAY, italic=True)
 
-# ============ S15 ongoing ============
-s = new_slide(15)
-add_title_bar(s, 'Part 4 — Ongoing Attempts')
+# ============ S16 Part 5: ongoing ============
+s = new_slide(16)
+add_title_bar(s, 'Part 5 — Ongoing Attempts')
 add_bullets(s, [
     'Wider latent space (v53): tracks nodes 32-dim, tt edges 24-dim — 16-dim sits at the physical-DOF lower bound',
     ('from-scratch training interrupted at ep74/150, not converged; resume planned', 1),
@@ -403,8 +440,8 @@ add_bullets(s, [
     'Chain scoring for trigger assistance: criteria AUC 0.90 / 0.78 (realistic); training ready, needs GPU',
 ], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.6), size=BODY_SM)
 
-# ============ S16 next + questions ============
-s = new_slide(16)
+# ============ S17 next + questions ============
+s = new_slide(17)
 add_title_bar(s, 'Next Steps and Open Questions')
 add_bullets(s, [
     'Resume the wider-latent training to 150 ep; layer struct + mom at reduced weights',
