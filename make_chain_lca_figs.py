@@ -62,9 +62,9 @@ ax.set_title('Cross-entropy (v38): "be the RIGHT class"\nCE → 0 if p → 1', f
 ax.set_ylim(0, 5)
 ax.grid(alpha=0.3)
 ax.annotate('confident & correct\n(CE ≈ 0)', xy=(0.9, -np.log(0.9)), xytext=(0.45, 1.2),
-            fontsize=9, color=GREEN, arrowprops=dict(arrowstyle='->', color=GREEN))
+            fontsize=9, color='#222222', arrowprops=dict(arrowstyle='->', color=GREEN))
 ax.annotate('unsure / wrong\n(CE large)', xy=(0.05, -np.log(0.05)), xytext=(0.15, 3.8),
-            fontsize=9, color=RED, arrowprops=dict(arrowstyle='->', color=RED))
+            fontsize=9, color='#222222', arrowprops=dict(arrowstyle='->', color=RED))
 
 plt.tight_layout()
 out1 = f'{FIG}/chain_lca_curves.png'
@@ -91,7 +91,7 @@ for a, b, lab in edges_tree:
     (x1, y1), (x2, y2) = nodes[a], nodes[b]
     ax.plot([x1, x2], [y1, y2], color=GREEN, lw=2.2)
     if lab == 'sister (class 2)':
-        ax.text((x1 + x2) / 2 + 3, (y1 + y2) / 2, lab, fontsize=9, color=GREEN)
+        ax.text((x1 + x2) / 2 + 3, (y1 + y2) / 2, lab, fontsize=9, color='#222222')
 # nodes
 for name, (x, y) in nodes.items():
     c = Circle((x, y), 3.2, fc='#EAEFF8', ec=BLUE, lw=1.6)
@@ -110,7 +110,7 @@ ax.add_patch(b2)
 ax.text(81, 6, 'dotted gray edges = background\n→ only in the global CE (no chain losses)', ha='center', fontsize=9, color='#222222')
 
 ax.text(55, 48.5, 'In-chain consistency: losses applied ONLY to truth-chain edges (we know them from MC truth)',
-        ha='center', fontsize=11, fontweight='bold', color=BLUE)
+        ha='center', fontsize=11, fontweight='bold', color='#222222')
 
 plt.tight_layout()
 out2 = f'{FIG}/chain_lca_where.png'
@@ -146,10 +146,10 @@ ax.set_ylabel('accuracy (%)', fontsize=10)
 ax.set_title('Per-class accuracy (best model)', fontsize=12, fontweight='bold')
 ax.grid(axis='y', alpha=0.3)
 ax.annotate('class 2 = rare AND hardest\n→ structural bottleneck', xy=(2, 49.17),
-            xytext=(0.6, 20), fontsize=10, color=ORANGE,
+            xytext=(0.6, 20), fontsize=10, color='#222222',
             arrowprops=dict(arrowstyle='->', color=ORANGE))
 
-fig.suptitle('The GNN is weakest exactly where classes are rarest', fontsize=13, fontweight='bold', color=BLUE)
+fig.suptitle('The GNN is weakest exactly where classes are rarest', fontsize=13, fontweight='bold', color='#222222')
 plt.tight_layout(rect=[0, 0, 1, 0.92])
 out3 = f'{FIG}/chain_lca_imbalance.png'
 plt.savefig(out3, dpi=150, bbox_inches='tight')
@@ -176,13 +176,13 @@ for ax, (title, bad_edge) in zip(axes, [
         if (a, b) == bad_edge:
             ax.plot([x1, x2], [y1, y2], color=RED, lw=3.0, ls='--')
             ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2, 'misclassified as class 0\n→ pruned → chain dies',
-                    fontsize=8, color=RED, ha='left')
+                    fontsize=8, color='#222222', ha='left')
         else:
             ax.plot([x1, x2], [y1, y2], color=GREEN, lw=2.4)
             if lab == '2':
-                ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2, f'class {lab}', fontsize=8, color=GREEN)
+                ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2, f'class {lab}', fontsize=8, color='#222222')
             elif lab == '1':
-                ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2 - 2.5, f'class {lab}', fontsize=8, color=GREEN)
+                ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2 - 2.5, f'class {lab}', fontsize=8, color='#222222')
     # nodes
     for name, (x, y) in nodes.items():
         c = Circle((x, y), 3.0, fc='#EAEFF8', ec=BLUE, lw=1.5)
@@ -193,11 +193,11 @@ for ax, (title, bad_edge) in zip(axes, [
         ax.add_patch(c)
     # verdict
     if bad_edge:
-        ax.text(50, 49.5, title, ha='center', fontsize=11, fontweight='bold', color=RED)
-        ax.text(50, 1.5, 'result: chain broken ✗', ha='center', fontsize=10, color=RED)
+        ax.text(50, 49.5, title, ha='center', fontsize=11, fontweight='bold', color='#222222')
+        ax.text(50, 1.5, 'result: chain broken ✗', ha='center', fontsize=10, color='#222222')
     else:
-        ax.text(50, 49.5, title, ha='center', fontsize=11, fontweight='bold', color=GREEN)
-        ax.text(50, 1.5, 'result: chain recovered ✓', ha='center', fontsize=10, color=GREEN)
+        ax.text(50, 49.5, title, ha='center', fontsize=11, fontweight='bold', color='#222222')
+        ax.text(50, 1.5, 'result: chain recovered ✓', ha='center', fontsize=10, color='#222222')
 
 plt.tight_layout()
 out4 = f'{FIG}/chain_lca_before_after.png'
