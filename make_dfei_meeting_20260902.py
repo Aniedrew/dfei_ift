@@ -279,7 +279,7 @@ add_flow_text(s, 0.8, 6.7, 11.8, 0.4,
               size=12, color=GRAY, italic=True)
 
 # ============ S7 Part 2: physics supervision concept ============
-s = new_slide(6)
+s = new_slide(7)
 add_title_bar(s, 'Part 2 — Supervising Representations with Physics', 'One common idea behind several heads')
 add_bullets(s, [
     'Idea: physical / structural quantities are data-intrinsic; supervise the representation with them, keeping the model end-to-end',
@@ -305,7 +305,7 @@ add_bullets(s, [
 add_pic(s, V47 + '/NN_edges_2_roc.png', Inches(7.6), Inches(1.7), width=Inches(5.2))
 
 # ============ S8 struct + mom ============
-s = new_slide(8)
+s = new_slide(9)
 add_title_bar(s, 'Structure and Momentum Heads', 'Node-level supervision of tree position and momentum')
 add_table(s, [
     ['Head', 'Target', 'Ablation (5-file eval)', 'Notes'],
