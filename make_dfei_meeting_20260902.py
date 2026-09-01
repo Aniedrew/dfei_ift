@@ -223,8 +223,9 @@ add_bullets(s, [
     ('why chains die · the rewards (hinge, chain-CE) · evidence it works', 1),
     'Part 3 — Supervising Representations with Physics',
     ('linear probes first · the head zoo · depth & RC', 1),
-    'Part 4 — Controlled Failures and Their Lessons',
-    'Part 5 — Ongoing Attempts',
+    'Part 4 — Why Extend the Latent Space',
+    ('more heads made things worse · size it from the physical DOF', 1),
+    'Part 5 — Other Ongoing Lines',
 ], Inches(0.9), Inches(1.7), Inches(11.5), Inches(4.8), size=BODY)
 
 # ============ S4 Part 1: differentiable pruning ============
@@ -421,35 +422,47 @@ add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
               'Implication: RC gives a physics-motivated "root-ness" target — no manual labels needed',
               size=12, color=GRAY, italic=True)
 
-# ============ S15 Part 4: controlled failures ============
+# ============ S15 Part 4: more heads made things worse ============
 s = new_slide(15)
-add_title_bar(s, 'Part 4 — Controlled Failures and Their Lessons', 'Two failed lines, two lessons')
+add_title_bar(s, 'Part 4 — Why Extend the Latent Space (1/2): More Heads Made Things Worse',
+              'Stacking supervisors on a fixed 16-dim space (v48) hurt the reconstruction')
 add_bullets(s, [
-    'PV subgraph training (v39-42): training on per-PV subgraphs while inference runs on the full graph',
-    ('full-graph ability degraded: class1 76.8% → 56.4%; line closed', 1),
-    'Combined mass + struct + mom (v48): aux losses (0.877) exceed the main task (0.559)',
-    ('reconstruction dropped 5pp although LCAG did not — backbone pulled toward auxiliary tasks', 1),
-    ('resolution: lower aux weights — mom 0.2, struct 0.3', 1),
-    'Lessons: train/infer graph mismatch is fatal; gradient balance must be explicit',
-], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.4), size=BODY_SM)
+    'Combined mass + struct + mom at once (v48): aux losses (0.877) exceed the main task (0.559)',
+    'Reconstruction dropped 5pp (AllParticles 55.9 → 50.6) although LCAG accuracy did not',
+    'Interpretation: the 16-dim representation is saturated — extra heads on the same space only compete',
+    'This motivated giving the representation more room (next slide)',
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.0), size=BODY_SM)
 add_pic(s, FIG + '/v48_failure.png', Inches(7.0), Inches(2.2), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
-              'Implication: the v48 failure shows why the head zoo needs explicit gradient balance — and why we ablate before stacking',
+              'Implication: more heads on a saturated latent space cannot add information — the space itself is the limit',
               size=12, color=GRAY, italic=True)
 
-# ============ S16 Part 5: ongoing ============
+# ============ S16 Part 4: size the latent space from physics ============
 s = new_slide(16)
-add_title_bar(s, 'Part 5 — Ongoing Attempts')
+add_title_bar(s, 'Part 4 — Size the Latent Space from Physics (2/2)', 'Count the physical variables a node/edge must encode')
 add_bullets(s, [
-    'Wider latent space (v53): tracks nodes 32-dim, tt edges 24-dim — 16-dim sits at the physical-DOF lower bound',
-    ('from-scratch training interrupted at ep74/150, not converged; resume planned', 1),
+    'A d-dim representation holds at most d independent numbers',
+    'A track carries ~12-14 physical DOF (position, momentum×3, PID, mass-related…) and the node repr must serve 9 heads',
+    '→ 16-dim sits at the lower bound → under-parameterized',
+    'v53: widen tracks nodes → 32-dim, tt edges → 24-dim (others stay 16); from scratch, v38 stack + mass head',
+    'Status: interrupted at ep74/150 — inconclusive; resume planned',
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.3), size=BODY_SM)
+add_pic(s, FIG + '/latent_dof.png', Inches(7.0), Inches(2.4), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
+              'Implication: widening is the physics-motivated fix for head competition — to be verified by a full run',
+              size=12, color=GRAY, italic=True)
+
+# ============ S17 Part 5: other ongoing lines ============
+s = new_slide(17)
+add_title_bar(s, 'Part 5 — Other Ongoing Lines')
+add_bullets(s, [
     'Public-data verification (v45/v49): no PID, class2/3 counts differ 4-14×; resume best val 33.4 @ep73',
     'Learned deterministic annealing: inference-side PV clustering with learned affinity (no subgraph training); core module CPU-verified',
     'Chain scoring for trigger assistance: criteria AUC 0.90 / 0.78 (realistic); training ready, needs GPU',
-], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.6), size=BODY_SM)
+], Inches(0.8), Inches(1.5), Inches(11.8), Inches(5.2), size=BODY_SM)
 
-# ============ S17 next + questions ============
-s = new_slide(17)
+# ============ S18 next + questions ============
+s = new_slide(18)
 add_title_bar(s, 'Next Steps and Open Questions')
 add_bullets(s, [
     'Resume the wider-latent training to 150 ep; layer struct + mom at reduced weights',

@@ -5,7 +5,8 @@
 3) probe_r2.png        — linear-probe R2 before/after mass supervision
 4) depth_calc.png      — how the struct-head depth target is computed (BFS)
 5) rc_calc.png         — how Rumor Centrality is computed (subtree sizes)
-6) v48_failure.png     — controlled failure: combined heads unbalance gradients
+6) latent_dof.png      — physical DOF vs latent capacity (why widen the space)
+7) v48_failure.png     — more heads on a saturated space made things worse
 """
 import os
 import numpy as np
@@ -170,7 +171,43 @@ fig.suptitle('Rumor Centrality: how the chain root is identified', fontsize=14, 
 plt.tight_layout(rect=[0, 0, 1, 0.93])
 save(fig, 'rc_calc')
 
-# ---------- 6) controlled failure: v48 gradient imbalance ----------
+# ---------- 6) latent space: physical DOF vs capacity ----------
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.2))
+
+ax = axes[0]
+cats = ['physical DOF\nneeded per track', 'latent dims\nbaseline (16)']
+vals = [13, 16]
+bars = ax.bar(cats, vals, color=[ORANGE, BLUE], width=0.45)
+ax.text(0, 13 + 0.4, '~12-14', ha='center', fontsize=12, fontweight='bold', color='#222222')
+ax.text(1, 16 + 0.4, '16', ha='center', fontsize=12, fontweight='bold', color='#222222')
+ax.set_ylim(0, 22)
+ax.set_ylabel('dimensions / DOF', fontsize=12)
+ax.set_title('Capacity vs need (node representation)', fontsize=13, fontweight='bold')
+ax.grid(axis='y', alpha=0.3)
+ax.text(0.5, 19, '16-dim sits at the\nlower bound', ha='center', fontsize=11, color='#222222')
+
+ax = axes[1]
+x = np.arange(2); w = 0.35
+base = [16, 16]
+wide = [32, 24]
+b1 = ax.bar(x - w / 2, base, w, color=GRAY, label='baseline')
+b2 = ax.bar(x + w / 2, wide, w, color=GREEN, label='v53 (asym)')
+for bars_ in (b1, b2):
+    for b in bars_:
+        ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.4, f'{b.get_height():.0f}',
+                ha='center', fontsize=12, fontweight='bold', color='#222222')
+ax.set_xticks(x); ax.set_xticklabels(['node repr', 'tt-edge repr'])
+ax.set_ylabel('latent dimensions', fontsize=12)
+ax.set_ylim(0, 38)
+ax.set_title('More room for 9 heads (v53)', fontsize=13, fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(axis='y', alpha=0.3)
+
+fig.suptitle('The latent space is the bottleneck — size it from physics', fontsize=14, fontweight='bold', color='#222222')
+plt.tight_layout(rect=[0, 0, 1, 0.92])
+save(fig, 'latent_dof')
+
+# ---------- 7) controlled failure: v48 gradient imbalance ----------
 fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.2))
 
 ax = axes[0]
