@@ -204,7 +204,127 @@ out4 = f'{FIG}/chain_lca_before_after.png'
 plt.savefig(out4, dpi=150, bbox_inches='tight')
 plt.close()
 
+# ======================================================================
+# Figure 5: the problem — class-0 dilution (single panel)
+# ======================================================================
+fig, ax = plt.subplots(figsize=(11, 4.8))
+labels = ['class 0\n(background)', 'classes 1/2/3\n(structural)']
+vals = [99.9, 0.1]
+bars = ax.bar(labels, vals, color=[GRAY, GREEN], width=0.45)
+for b, v in zip(bars, vals):
+    ax.text(b.get_x() + b.get_width() / 2, v * 2.2, f'{v}%',
+            ha='center', fontsize=15, fontweight='bold', color='#222222')
+ax.set_yscale('log'); ax.set_ylim(0.01, 300); ax.set_xlim(-0.5, 2.3)
+ax.set_ylabel('% of all edges (log scale)', fontsize=12)
+ax.grid(axis='y', alpha=0.3)
+ax.set_title('Edge-class distribution: ~1000 background edges per structural edge',
+             fontsize=13, fontweight='bold')
+ax.annotate('global CE gradient ≈ 99.9% from\n"predict class 0" → structural\nclasses are undertrained',
+            xy=(1.0, 0.12), xytext=(1.45, 4),
+            fontsize=11, color='#222222',
+            arrowprops=dict(arrowstyle='->', color=RED, lw=1.8))
+fig.suptitle('The Problem: Class-0 Dilution', fontsize=15, fontweight='bold', color='#222222')
+plt.tight_layout(rect=[0, 0, 1, 0.94])
+out5 = f'{FIG}/chain_lca_dilution.png'
+plt.savefig(out5, dpi=150, bbox_inches='tight')
+plt.close()
+
+
+def _box(ax, x, y, w, h, text, fc='#EAEFF8', ec=BLUE, fs=10, bold=False):
+    b = FancyBboxPatch((x, y), w, h, boxstyle='round,pad=0.3', fc=fc, ec=ec, lw=1.6)
+    ax.add_patch(b)
+    ax.text(x + w / 2, y + h / 2, text, ha='center', va='center', fontsize=fs,
+            color='#222222', fontweight='bold' if bold else 'normal')
+
+
+def _vline(ax, x, y1, y2, color=BLUE, lw=1.8):
+    ax.add_patch(FancyArrowPatch((x, y1), (x, y2), arrowstyle='-|>',
+                                 mutation_scale=16, color=color, lw=lw))
+
+
+# ======================================================================
+# Figure 6: hinge — where confidence comes from, where the loss goes
+# ======================================================================
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.6), gridspec_kw={'width_ratios': [1.15, 1]})
+
+# left: mechanism
+ax = axes[0]
+ax.set_xlim(0, 100); ax.set_ylim(0, 44); ax.axis('off')
+_box(ax, 8, 34, 84, 6.5, 'LCAG head: per-edge 4-class softmax\n→ (p0, p1, p2, p3)', fs=10, bold=True)
+_vline(ax, 50, 33, 29)
+_box(ax, 8, 22.5, 84, 6.5, 'confidence = max(p0…p3)\nprobability of the class the model chose', fs=10)
+_vline(ax, 50, 21.5, 17.5)
+_box(ax, 8, 11, 84, 6.5, 'hinge loss = max(0, margin − confidence)\nmargin = 0.3 — extra term in the total loss', fc='#FDF2E9', ec=ORANGE, fs=10, bold=True)
+_vline(ax, 50, 10, 6.5)
+_box(ax, 8, 2, 84, 5.5, 'applied ONLY on truth-chain edges\n(known from MC truth — training only)', fc='#EAFAF1', ec=GREEN, fs=9.5)
+ax.set_title('How the hinge works', fontsize=13, fontweight='bold')
+
+# right: hinge curve
+ax = axes[1]
+conf = np.linspace(0, 1, 400)
+margin = 0.3
+hinge = np.maximum(0, margin - conf)
+ax.plot(conf, hinge, lw=2.5, color=ORANGE)
+ax.axvline(margin, color=GRAY, ls='--', lw=1.2)
+ax.fill_between(conf, 0, hinge, where=hinge > 0, color=ORANGE, alpha=0.15)
+ax.set_xlabel('edge confidence = max(pk)', fontsize=11)
+ax.set_ylabel('hinge loss', fontsize=11)
+ax.set_title('Loss vs confidence', fontsize=12, fontweight='bold')
+ax.set_ylim(-0.02, 0.35)
+ax.grid(alpha=0.3)
+ax.text(margin + 0.02, 0.02, 'conf ≥ 0.3 → loss = 0', fontsize=10, color='#222222')
+ax.text(0.02, 0.24, 'loses confidence →\npenalty grows linearly', fontsize=10, color='#222222')
+
+fig.suptitle('Hinge (v37): keep chain edges CONFIDENT — whichever class', fontsize=14, fontweight='bold', color='#222222')
+plt.tight_layout(rect=[0, 0, 1, 0.93])
+out6 = f'{FIG}/chain_lca_hinge.png'
+plt.savefig(out6, dpi=150, bbox_inches='tight')
+plt.close()
+
+# ======================================================================
+# Figure 7: cross-entropy — what it means, where chain-CE is applied
+# ======================================================================
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.6), gridspec_kw={'width_ratios': [1, 1.15]})
+
+# left: CE curve
+ax = axes[0]
+p = np.linspace(1e-3, 1, 400)
+ce = -np.log(p)
+ax.plot(p, ce, lw=2.5, color=BLUE)
+ax.set_xlabel('p_true (probability of the TRUE class)', fontsize=11)
+ax.set_ylabel('CE = −log(p_true)', fontsize=11)
+ax.set_title('Cross-entropy: be the RIGHT class', fontsize=12, fontweight='bold')
+ax.set_ylim(0, 5)
+ax.grid(alpha=0.3)
+ax.annotate('confident & right\np_true → 1, CE ≈ 0', xy=(0.9, -np.log(0.9)), xytext=(0.40, 1.35),
+            fontsize=10, color='#222222', arrowprops=dict(arrowstyle='->', color=GREEN))
+ax.annotate('unsure / wrong\np_true small, CE large', xy=(0.05, -np.log(0.05)), xytext=(0.12, 3.6),
+            fontsize=10, color='#222222', arrowprops=dict(arrowstyle='->', color=RED))
+
+# right: where chain-CE is applied
+ax = axes[1]
+ax.set_xlim(0, 100); ax.set_ylim(0, 44); ax.axis('off')
+_box(ax, 4, 32, 44, 8, 'global CE\n(ALL edges)', fc='white', ec=GRAY, fs=10, bold=True)
+_box(ax, 52, 32, 44, 8, 'chain-CE\n(truth-chain edges, classes 1/2/3)', fc='#EAFAF1', ec=GREEN, fs=10, bold=True)
+_vline(ax, 26, 30, 25); _vline(ax, 74, 30, 25)
+ax.text(26, 17, 'gradient ≈ 99.9%\n"predict background"\n→ rare classes barely learn',
+        ha='center', fontsize=10, color='#222222')
+ax.text(74, 17, 'each structural edge gets a\ndirect gradient on its true class\n→ classes 1/2/3 learn',
+        ha='center', fontsize=10, color='#222222')
+ax.text(50, 3, 'same function −log(p_true) — the change is WHERE it is applied',
+        ha='center', fontsize=10, style='italic', color='#222222')
+ax.set_title('Where chain-CE is applied', fontsize=13, fontweight='bold')
+
+fig.suptitle('Chain-CE (v38): same cross-entropy, applied only where the chain lives', fontsize=14, fontweight='bold', color='#222222')
+plt.tight_layout(rect=[0, 0, 1, 0.93])
+out7 = f'{FIG}/chain_lca_ce.png'
+plt.savefig(out7, dpi=150, bbox_inches='tight')
+plt.close()
+
 print('[ok]', out1)
 print('[ok]', out2)
 print('[ok]', out3)
 print('[ok]', out4)
+print('[ok]', out5)
+print('[ok]', out6)
+print('[ok]', out7)
