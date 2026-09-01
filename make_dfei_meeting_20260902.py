@@ -181,14 +181,13 @@ add_bullets(s, [
 s = new_slide(4)
 add_title_bar(s, 'Part 1 — Differentiable Pruning with Annealing', 'Align training with the pruned graphs seen at inference')
 add_bullets(s, [
-    'Problem: training optimizes the full graph; inference prunes nodes/edges with hard thresholds first',
-    'Solution: a soft mask on the weights, w_eff = w · σ((w − cut)/τ)',
-    'Temperature τ annealed 1.0 → 0.1 over training:',
-    ('large τ → smooth mask and stable gradients', 1),
-    ('small τ → approximates the hard threshold at the end', 1),
-    'Pruning cut aligned to inference and tightened over versions:',
-    ('0.5 (v36) → 0.7 (v37) → 0.85 (v38), converging to the 0.9 inference threshold', 1),
-], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.6), size=BODY_SM)
+    'Problem: training sees the full graph; inference prunes with hard thresholds first',
+    'Fix: soft mask w_eff = w · σ((w − cut)/τ), temperature τ annealed 1.0 → 0.1',
+    ('large τ → smooth mask, stable gradients; small τ → approximates the hard threshold', 1),
+    'Cut aligned to inference and tightened over versions: 0.5 (v36) → 0.7 (v37) → 0.85 (v38) → 0.9 (inference)',
+], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.6), size=BODY_SM)
+add_pic(s, FIG + '/pruning_sigmoid_tau.png', Inches(0.7), Inches(3.95), width=Inches(6.3))
+add_pic(s, FIG + '/pruning_flow.png', Inches(7.1), Inches(4.15), width=Inches(5.9))
 
 # ============ S5 Part 1: LCA supervision adjustment ============
 s = new_slide(5)
