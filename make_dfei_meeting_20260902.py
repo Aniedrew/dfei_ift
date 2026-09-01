@@ -123,8 +123,17 @@ def add_pic(slide, path, left, top, width=None, height=None):
     return False
 
 
+def _rgb(c):
+    """Accept RGBColor or '#RRGGBB' string."""
+    if isinstance(c, RGBColor):
+        return c
+    h = c.lstrip('#')
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
 def add_flow_box(slide, x, y, w, h, text, fill=LIGHT, line=BLUE, size=10, bold=False):
     """Native rounded-rectangle box for the flow chart (adjustable in PowerPoint)."""
+    fill, line = _rgb(fill), _rgb(line)
     sh = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
     sh.fill.solid(); sh.fill.fore_color.rgb = fill
     sh.line.color.rgb = line; sh.line.width = Pt(1.6)
