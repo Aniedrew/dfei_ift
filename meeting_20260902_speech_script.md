@@ -1,63 +1,120 @@
-# DFEI Group Meeting — Speech Script (2026-09-02, v4, formal)
+# DFEI Group Meeting — Speech Script (spoken English, 2026-09-02)
 
-> 12 slides · target ~18 min · formal register
+> 12 slides · ~18 min · natural spoken style, read directly · [brackets] = action/pause cues
 
 ---
 
 ## S1 — Title (10 s)
-"Good morning. This presentation gives an account of the DFEI optimization work carried out on the CERN Monte Carlo production, organized by theme rather than by chronology."
+
+"Hi everyone. Today I'll walk you through the DFEI optimization work I've been doing on CERN Monte Carlo. There's a lot to cover, so I've organized it by theme rather than by timeline."
 
 ## S2 — Data and overall effect (1 min)
-"Everything in this report uses the CERN official Monte Carlo production, DFEI_IFT_20260702, evaluated at threshold 0.9 on twenty test files. The headline result: since fixing a silent class-weight bug, the optimization line has raised PerfectReco from 23.9 to 32.7 percent, and AllParticles from 43.4 to 55.9 percent. The four panels show the trajectory of PerfectReco, AllParticles, and the two LCAG class accuracies across the main versions, from v31 to v47."
+
+"First, the data. Everything here uses the official CERN Monte Carlo production — the DFEI_IFT_20260702 sample in yukaiz's folder. Evaluation is at pruning threshold 0.9 on twenty test files.
+
+Straight to the results. After fixing a silent class-weight bug, PerfectReco went from 23.9 up to 32.7 — almost nine points. AllParticles went from 43.4 to 55.9 — twelve points.
+
+This figure shows four metrics across versions: PerfectReco, AllParticles, and the LCAG class-one and class-two accuracies, from v31 to v47. Overall, everything keeps climbing."
 
 ## S3 — Outline (30 s)
-"The report is organized in four parts. Part one concerns supervision and the alignment of training with inference. Part two is about supervising the representations with physical and structural quantities — several heads share this idea. Part three covers two controlled failures and their lessons. Part four lists the ongoing attempts, most prominently the wider latent space."
+
+"The talk has four parts. Part one is about the supervision signal itself and aligning training with inference. Part two is the core idea — supervising the representations with physics — and several heads fall under it. Part three covers two controlled failures that I think are instructive. Part four is what's in progress, mainly the wider latent space."
 
 ## S4 — Differentiable pruning with annealing (2 min)
-"Part one, first step: the training–inference mismatch. Training optimizes the full graph, while inference first prunes nodes and edges with hard thresholds. To remove this gap we apply a soft mask to the weights during training: the effective weight is the weight times a sigmoid of weight minus cut over a temperature. The temperature is annealed from one down to one tenth over the run. At high temperature the mask is smooth and the gradients are stable; at low temperature the mask approximates the hard threshold that inference applies. The pruning cut itself is aligned to inference and tightened version by version — 0.5 in v36, 0.7 in v37, 0.85 in v38 — converging toward the 0.9 threshold used at inference. The model therefore learns to separate signal and background weights under the same conditions it encounters at inference."
+
+"Part one, first step: differentiable pruning.
+
+The problem is simple. During training the model sees the full graph, but at inference we prune first, with hard thresholds, and then reconstruct. Training and inference see different graphs — that's the gap.
+
+Our fix is a soft mask on the weights: effective weight equals weight times a sigmoid of weight-minus-cut over a temperature. The temperature is annealed from 1.0 down to 0.1 during training. When the temperature is high, the mask is smooth and gradients are stable; as it drops, the mask behaves more and more like the hard threshold used at inference.
+
+The cut itself also tightens across versions: 0.5 in v36, 0.7 in v37, 0.85 in v38, converging toward the 0.9 used at inference. So the model learns to separate signal edges from background edges under exactly the conditions it faces at inference."
 
 ## S5 — LCA supervision adjustment (2 min)
-"The second step of part one concerns the LCA supervision. Class two — two tracks from the same mother — is the structural bottleneck, so we weighted it explicitly. Weight 3.0 in v37 over-weighted the class and hurt class one, so we settled at 2.0 in v38. In parallel we introduced in-chain consistency losses, supervised only on edges that lie on truth chains. Version 37 added a hinge loss that keeps chain edges confident. Version 38 added a direct cross-entropy on the chain-edge classes. The reason is quantitative: structural edges are only about one tenth of one percent of all edges, so without direct cross-entropy the dominant background class dilutes their signal entirely. The net effect of part one is PerfectReco from 23.9 to 29.3 percent."
+
+"Second step of part one: adjusting the LCA supervision. This one had some trial and error.
+
+Class two — two tracks from the same mother — is the structural bottleneck, so we weighted it explicitly. In v37 we tried 3.0, but that was too aggressive and pushed class one down, so v38 settled on 2.0.
+
+The other idea is in-chain consistency losses, supervised only on edges that lie on truth chains. v37 added a hinge loss that keeps chain edges confident. v38 added a direct cross-entropy on the chain-edge classes. Why the extra cross-entropy? Because structural edges are only about a tenth of a percent of all edges. Without direct supervision, the dominant background class completely dilutes their signal.
+
+Net effect of part one: PerfectReco from 23.9 to 29.3."
 
 ## S6 — Physics supervision: one common idea (1.5 min)
-"Part two. The organizing idea is simple: physical and structural quantities are data-intrinsic — they are computed from the tracks themselves — so we supervise the representation with them, while keeping the model end-to-end. Several heads share this theme. The source head, added early in v36, supervises the Rumor-Centrality root. The mass head regresses the log10 of the two-pion invariant mass at the edge level. The structure head regresses node depth and Rumor-Centrality value. The momentum head regresses the normalized node momentum. All of them are verified with linear probes on the frozen backbone."
+
+"Part two — the part I find most interesting.
+
+The core idea in one sentence: physical quantities are data-intrinsic — you compute them straight from the tracks, no extra labels — so we use them to supervise the representation, while keeping the model end-to-end.
+
+Several heads share this theme. The source head came first, back in v36, supervising the chain root. The mass head works on edges, regressing the log10 of the two-pion invariant mass. The structure head works on nodes, regressing depth and the Rumor-Centrality value. And the momentum head, also on nodes, regresses the normalized momentum. All of them are verified with linear probes — we freeze the backbone and check whether the physical quantity is linearly readable from the representation."
 
 ## S7 — Mass head: main result (1.5 min)
-"The mass head is the main result. Two tracks from the same mother sit near a resonance mass, so supervising the pair mass forces the edge representation to encode sister relations. The implementation is a SmoothL1 regression of the log10 mass, with the sentinel edges masked and weight one. On the same twenty test files, PerfectReco improves from 29.3 to 32.7, AllParticles from 52.1 to 55.9, and class-two accuracy from 44.7 to 51.1 — the class that glues chains together. The ROC curve on the right is the class-two discrimination of the resulting model."
+
+"The mass head is the headline result.
+
+The physics intuition: two tracks from the same mother sit near a resonance in the pion-pair mass. So if we supervise that mass, we're effectively forcing the edge representation to encode 'are these two tracks sisters?' — which is exactly class two.
+
+Implementation: SmoothL1 regression of log10 mass, sentinel edges masked, weight one.
+
+Results, same twenty test files: PerfectReco 29.3 to 32.7; AllParticles 52.1 to 55.9; and the key one — class two, from 44.7 to 51.1, up six and a half points. Class two is the glue of the chain, so when it improves, reconstruction follows. The ROC on the right is class-two discrimination of the final model."
 
 ## S8 — Structure and momentum heads (1.5 min)
-"The structure and momentum heads supervise the nodes. The structure head regresses depth — the BFS distance to the chain centroid — and the Rumor-Centrality value, i.e. the position of a node in the tree. The momentum head regresses the normalized momentum. The table reports a controlled ablation from the masshead2 checkpoint on a small five-file evaluation: the structure head is the best single head, with AllParticles up 3.1 points; the momentum head adds 2.4. The momentum head was motivated by a probe: node representations were linearly unreadable for momentum, with R-squared essentially zero. The general lesson is procedural — probe first, identify the missing quantity, then supervise it."
+
+"Then the two node-level heads.
+
+The structure head supervises where a node sits in the tree: depth — the BFS distance to the chain centroid — and the Rumor-Centrality value. The momentum head supervises the normalized momentum. Actually, the momentum head came from a probe finding: node representations were linearly unreadable for momentum, R-squared basically zero — the information was getting scrambled on the way through.
+
+The table is a controlled ablation, resumed from the masshead2 checkpoint and evaluated on a small set. The structure head is the best single head — AllParticles up 3.1 points. The momentum head adds 2.4. The methodological takeaway: probe first, find what's missing, then supervise it."
 
 ## S9 — Verification by linear probes (1 min)
-"The verification is quantitative. We freeze the backbone and regress the physical quantity with a linear model. Before mass supervision, the edge representation reads the mass with R-squared 0.003; after masshead2, 0.93. The mass information is demonstrably inside the representation. Nodes remain unreadable for momentum, which is precisely the deficit addressed by the momentum head, to be re-probed after training."
+
+"The probe result is quite clean. Freeze the backbone, regress the physical quantity linearly. Before the mass supervision, reading the mass from the edge representation gives R-squared 0.003 — essentially nothing. After masshead2: 0.93. So the mass information is genuinely inside the representation. Nodes are still unreadable for momentum, which is exactly what the momentum head targets — we'll re-probe once it's trained."
 
 ## S10 — Controlled failures (2 min)
-"Part three: two controlled failures, both instructive. The first is PV subgraph training. The rationale was to reduce cross-chain interference by training on per-PV subgraphs. The failure was structural: the backbone was trained only on subgraphs, while inference runs the GNN on the full graph first; full-graph ability degraded, and class-one accuracy fell from 76.8 to 56.4 percent. The line was closed. The second failure is the simultaneous combination of mass, structure, and momentum heads: the auxiliary losses summed to 0.877, exceeding the main task at 0.559, and reconstruction dropped by five points even though the LCAG classification did not degrade. The shared backbone was pulled toward the auxiliary tasks. The resolution is to reduce the auxiliary weights — momentum to 0.2 and structure to 0.3. Two lessons: a train–inference mismatch in the graph structure is fatal, and the gradient balance between heads must be explicit."
+
+"Part three: two controlled failures, both instructive.
+
+First, PV subgraph training. The idea made sense: split the event into per-PV subgraphs of twenty to thirty nodes to reduce cross-chain interference. But the failure was structural — the backbone was only ever trained on subgraphs, while inference runs the GNN on the full graph first. Full-graph ability degraded; class one dropped from 76.8 to 56.4. We closed that line.
+
+Second, adding the mass, structure, and momentum heads all at once. The auxiliary losses summed to 0.877, exceeding the main task at 0.559. Reconstruction dropped five points — even though the LCAG classification didn't degrade. The shared backbone was being pulled toward the auxiliary tasks. The fix: lower the auxiliary weights — momentum to 0.2, structure to 0.3.
+
+Two lessons: a train–inference mismatch in the graph structure is fatal, and the gradient balance between heads has to be explicit."
 
 ## S11 — Ongoing attempts (1.5 min)
-"Part four lists what is in progress. First, a wider latent space: tracks nodes are widened to 32 dimensions and track-track edges to 24, on the argument that the current 16 dimensions sit at the lower bound of the physical degrees of freedom. The from-scratch training was interrupted at epoch 74 of 150 and has not converged; a resume is planned. Second, public-data verification: the published dataset has no PID and its class-two and class-three edge counts differ from ours by a factor of four to fourteen; the resumed run reached a best validation of 33.4 at epoch 73. Third, learned deterministic annealing for inference-side PV clustering with a learned affinity, which avoids subgraph training; the core module is CPU-verified. Fourth, chain scoring for trigger-line assistance: the criteria reach an AUC of 0.90, and 0.78 against realistic pruned components; the scorer training is ready and awaits GPU time."
+
+"Part four — what's in progress.
+
+First, the wider latent space. The node representation is 16-dimensional, but the physical degrees of freedom are roughly twelve to fourteen, and it has to serve nine heads — 16 sits at the lower bound. So we widened tracks nodes to 32 dimensions and track-track edges to 24, retraining from scratch. But the job got interrupted at epoch 74 of 150, so it hasn't converged — we can't draw conclusions yet. The plan is to resume.
+
+Second, public-data verification. The published dataset has no PID, and the class-two and class-three edge counts differ from ours by a factor of four to fourteen — big differences. After the resume, the best validation reached 33.4 at epoch 73.
+
+Third, learned deterministic annealing — inference-side PV clustering with a learned affinity, no subgraph training. The core module is implemented and CPU-verified.
+
+Fourth, chain scoring for trigger assistance. Chain criteria reach an AUC of 0.90, and 0.78 against realistic pruned components. The scorer training is ready and waiting for GPU time."
 
 ## S12 — Next steps and open questions (1 min)
-"Finally, the next steps and open questions. We will resume the wider-latent training to 150 epochs and layer the structure and momentum heads at reduced weights; run the queued evaluations; train the chain scorer; and plug the GNN affinity into the learned deterministic annealing. The questions on which we would value the group's input: should the target be trigger assistance through candidate scoring, or full-event reconstruction, and which metric would the collaboration trust? Given that parent–child track relations are physically rare, is same-source clustering — class two — the real problem to solve? And what is a realistic HLT2 or Upgrade-II time budget for a lightweight GNN per event?"
+
+"Finally, next steps and a couple of questions for you.
+
+Next: resume the wider-latent training to 150 epochs, then stack the structure and momentum heads at reduced weights; run the queued evaluations; train the chain scorer; and plug the GNN affinity into the learned deterministic annealing.
+
+Questions we'd value your input on: first, should the target be trigger assistance through candidate scoring, or full-event reconstruction — and which metric would the collaboration trust? Second, since parent–child track relations are physically rare, is same-source clustering — class two — the real problem DFEI should solve? Third, what's a realistic per-event time budget for a lightweight GNN at HLT2 or Upgrade II?"
 
 ---
 
-## Q&A cheat-sheet
+## Likely questions and prepared answers
 
-**Q: Why does the mass head improve reconstruction and not only classification?**
-A: The mass supervision forces the edge representation to encode sister relations — class two — and class-two edges determine chain survival. The 6.4-point class-two gain is the mechanism.
+**Q: Why does the mass head help reconstruction, not just classification?**
+A: Because it forces the edge representation to encode sister relations — class two — and class-two edges are the glue of the chain. The 6.4-point class-two gain is the mechanism.
 
 **Q: Why not feed m_ππ as an input feature instead of supervising with it?**
-A: Two reasons: it would break the end-to-end claim, and our verification method is representation probing — if a physical quantity matters, the model should learn to hold it internally.
+A: Two reasons. Feeding it in breaks the end-to-end claim — the model wouldn't learn to derive it from momenta. And our verification method is representation probing — if a physical quantity matters, the model should learn to hold it internally.
 
-**Q: What exactly is the annealing in the pruning?**
-A: A temperature in the sigmoid mask, w·σ((w−cut)/τ), annealed from 1.0 to 0.1. High τ gives a smooth mask and stable gradients; low τ makes the mask behave like the hard threshold used at inference.
+**Q: What exactly is the annealing?**
+A: A temperature inside the sigmoid mask, w·σ((w−cut)/τ), annealed from 1.0 to 0.1 over training. High τ gives a smooth mask and stable gradients; low τ makes the mask behave like the hard threshold used at inference.
 
 **Q: Is the 74-epoch wider-latent run a failure?**
-A: No; it is an incomplete run, interrupted by the job limit with validation still decreasing. Whether wider latents help remains open.
+A: No — it's an incomplete run, interrupted by the job limit with validation still decreasing. Whether wider latents help is still an open question.
 
-**Q: Why did the combined heads fail while each individually helps?**
-A: Gradient competition — the auxiliary losses together exceeded the main task. The ablation shows each head is individually positive; the combination only needs lower weights.
-
-**Q: Why was the PV subgraph line closed?**
-A: The backbone was trained on subgraphs but must run on full graphs at inference; that mismatch degraded full-graph ability and is not fixable by validation-side alignment. The clustering idea is being pursued as inference-side deterministic annealing instead.
+**Q: Why did the three heads together fail when each helps alone?**
+A: Gradient competition — the auxiliary losses together exceeded the main task. The ablation shows each head is individually positive; the combination just needs lower weights.
