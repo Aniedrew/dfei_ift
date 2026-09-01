@@ -16,7 +16,6 @@ from pptx.enum.shapes import MSO_SHAPE
 
 BASE = '/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn'
 FIG = BASE + '/meeting_figs'
-V47 = BASE + '/LHCb_logs/DFEI/version_47/plots_inclusive_00342442__v38_masshead2/edges'
 OUT = FIG + '/DFEI_progress_20260902_EN.pptx'
 os.makedirs(FIG, exist_ok=True)
 
@@ -222,7 +221,8 @@ add_bullets(s, [
     ('training–inference alignment: soft mask w_eff = w·σ((w−cut)/τ), τ annealed', 1),
     'Part 2 — Rewarding the Chain',
     ('why chains die · the rewards (hinge, chain-CE) · evidence it works', 1),
-    'Part 3 — Supervising Representations with Physics (source / mass / struct / mom)',
+    'Part 3 — Supervising Representations with Physics',
+    ('linear probes first · the head zoo · depth & RC', 1),
     'Part 4 — Controlled Failures and Their Lessons',
     'Part 5 — Ongoing Attempts',
 ], Inches(0.9), Inches(1.7), Inches(11.5), Inches(4.8), size=BODY)
@@ -343,74 +343,82 @@ add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
               'Implication: the rewards directly improve the structural classes the global CE ignores — chains survive more often',
               size=12, color=GRAY, italic=True)
 
-# ============ S11 Part 3: physics supervision concept ============
+# ============ S11 Part 3: linear probes (physics is invisible) ============
 s = new_slide(11)
-add_title_bar(s, 'Part 3 — Supervising Representations with Physics', 'One common idea behind several heads')
+add_title_bar(s, 'Part 3 — First, Check: Physics is Invisible', 'Linear probes show what the backbone does NOT encode')
 add_bullets(s, [
-    'Idea: physical / structural quantities are data-intrinsic; supervise the representation with them, keeping the model end-to-end',
-    'The head zoo: one shared backbone, many supervised targets',
-    ('source head (v36) — Rumor-Centrality root; early instance of the same idea', 1),
-    ('mass head — edge-level log10(m_ππ)', 1),
-    ('structure head — node depth + RC value', 1),
-    ('momentum head — node normalized momentum', 1),
-    'Verification: linear probes on the frozen backbone (Ridge regression)',
-], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.4), size=BODY_SM)
-add_pic(s, FIG + '/head_zoo.png', Inches(7.0), Inches(2.2), width=Inches(5.9))
-add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
-              'Implication: the backbone must represent the physics — the heads only tell it what to keep',
-              size=12, color=GRAY, italic=True)
-
-# ============ S12 Part 3: mass head ============
-s = new_slide(12)
-add_title_bar(s, 'The Mass Head: Main Result', 'Edge-level regression of log10(m_ππ)')
-add_bullets(s, [
-    'Same-mother track pairs sit near resonance masses → the edge representation must encode sister relations',
-    'Setup: SmoothL1 on log10(m_MeV), sentinel edges masked, weight 1.0',
-    'v38 → masshead2 (20 test files):',
-    ('PerfectReco 29.3% → 32.7%  (+3.4pp)', 1),
-    ('AllParticles 52.1% → 55.9%  (+3.8pp)', 1),
-    ('LCAG class2 44.7% → 51.1%  (+6.4pp)', 1),
+    'Probe: freeze the backbone, fit one linear layer, try to read a physical quantity from the representation (top right)',
+    'If the quantity is not in the representation, the probe fails: R² ≈ 0',
+    'Before any physics head: mass R² = 0.003, momentum R² ≈ 0 — physics is lost',
+    'So we added heads that supervise physics directly (head zoo, next)',
+    'After mass supervision (masshead2): edge mass R² = 0.930; PerfectReco 29.3 → 32.7, class2 44.7 → 51.1',
 ], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.3), size=BODY_SM)
-add_pic(s, V47 + '/NN_edges_2_roc.png', Inches(7.0), Inches(1.7), width=Inches(5.9))
-add_flow_text(s, 7.0, 5.75, 5.9, 0.9,
-              'ROC — LCAG class-2 (sister) edge detection, v47 masshead2, 20 test files. Mass supervision moves sister information into the edge representation.',
-              size=12, color=GRAY)
+add_pic(s, FIG + '/probe_method.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
+add_pic(s, FIG + '/probe_r2.png', Inches(7.0), Inches(4.15), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.9, 11.8, 0.4,
-              'Implication: supervising a physical target improved the hardest structural class — and the whole reconstruction',
+              'Implication: the backbone does not encode physics by itself — it must be supervised into the representation',
               size=12, color=GRAY, italic=True)
 
-# ============ S13 Part 3: struct + mom ============
+# ============ S12 Part 3: head zoo (native shapes) ============
+s = new_slide(12)
+add_title_bar(s, 'Part 3 — The Head Zoo', 'One backbone, many supervised targets — new heads in green')
+add_bullets(s, [
+    'Original heads (blue): the reconstruction machinery — classify, prune, assign',
+    'New heads (green): supervise physical / structural quantities directly',
+    ('source (v36) — chain root · mass — log10 m_ππ · struct — depth + RC · mom — momentum', 1),
+    'Same backbone, different targets: supervision writes the physics into the representation',
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.0), size=BODY_SM)
+add_flow_box(s, 6.95, 1.7, 1.35, 4.7, 'shared GNN\nbackbone\n\nnode + edge\nrepresentations', size=9, bold=True)
+
+
+def _hz(x, y, name, target, green):
+    add_flow_box(s, x, y, 1.55, 1.25, name + '\n' + target,
+                 fill='#EAFAF1' if green else LIGHT,
+                 line=GREEN if green else BLUE, size=8, bold=True)
+
+
+_hz(8.65, 5.3, 'LCAG', 'edge class 0-3', False)
+_hz(10.4, 5.3, 'node prune', 'keep/remove node', False)
+_hz(12.15, 5.3, 'edge prune', 'keep/remove edge', False)
+_hz(8.65, 3.55, 'source', 'chain root (RC)', True)
+_hz(10.4, 3.55, 'mass', 'log10 m_ππ', True)
+_hz(12.15, 3.55, 'struct', 'depth + RC', True)
+_hz(8.65, 1.8, 'mom', 'normalized p', True)
+_hz(10.4, 1.8, 'PV asso', 'PV assignment', False)
+_hz(12.15, 1.8, 'chain scorer', 'chain conf. (planned)', False)
+for yc in (5.925, 4.175, 2.425):
+    add_flow_arrow(s, 'right', 8.32, yc - 0.13, 0.26, 0.26)
+    add_flow_arrow(s, 'right', 10.22, yc - 0.13, 0.12, 0.26)
+    add_flow_arrow(s, 'right', 11.97, yc - 0.13, 0.12, 0.26)
+add_flow_text(s, 8.6, 6.55, 2.2, 0.3, 'green = new physics heads', size=9, color=DARK)
+add_flow_text(s, 11.0, 6.55, 2.2, 0.3, 'blue = original heads', size=9, color=DARK)
+
+# ============ S13 Part 3: struct head — depth ============
 s = new_slide(13)
-add_title_bar(s, 'Structure and Momentum Heads', 'Node-level supervision of tree position and momentum')
-add_table(s, [
-    ['Head', 'Target', 'All / Perfect (5-file eval)'],
-    ['baseline', 'mass only', '51.4 / 29.7'],
-    ['+ struct', 'depth + RC', '54.5 / 30.5 (+0.8) — best'],
-    ['+ mom', 'normalized p', '53.8 / 30.5 (+0.8)'],
-], Inches(0.7), Inches(1.5), Inches(6.0), Inches(1.9), font_size=15)
+add_title_bar(s, 'Part 3 — Structure Head: Depth', 'How the "where in the tree" target is computed')
 add_bullets(s, [
-    'Struct: depth (BFS to chain centroid) + RC value — where the node sits in the tree (see right); class3 60.8→63.2',
-    'Mom: motivated by a probe — node representations were linearly unreadable for momentum (R² ≈ 0)',
-    'Lesson: probe first, find the missing quantity, then supervise it',
-], Inches(0.7), Inches(3.7), Inches(6.0), Inches(3.0), size=BODY_SM)
-add_pic(s, FIG + '/struct_mom_tree.png', Inches(7.0), Inches(2.0), width=Inches(5.9))
+    'Target: how far a node sits from the chain root (the B candidate)',
+    'Computed by BFS on the truth chain: root d=0 → children d=1 → grandchildren d=2 (right)',
+    'The struct head regresses this depth from the node representation',
+    'Effect (5-file ablation): +struct → All 51.4 → 54.5, Perfect 29.7 → 30.5; class3 60.8 → 63.2',
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(4.8), size=BODY_SM)
+add_pic(s, FIG + '/depth_calc.png', Inches(7.0), Inches(2.2), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
-              'Implication: depth/RC label the node’s role in the tree — the struct head forces the node representation to encode it',
+              'Implication: depth labels the node’s role in the chain — supervising it forces the representation to encode tree position',
               size=12, color=GRAY, italic=True)
 
-# ============ S14 Part 3: probe verification ============
+# ============ S14 Part 3: struct head — rumor centrality ============
 s = new_slide(14)
-add_title_bar(s, 'Verification: Linear Probes on the Frozen Backbone', 'Ridge regression; R² of the physical quantity')
+add_title_bar(s, 'Part 3 — Structure Head: Rumor Centrality', 'How the "is this the root?" score is computed')
 add_bullets(s, [
-    'Probe: fit a linear regressor on the frozen backbone — can the quantity be read off?',
-    'Edge repr → log10(m_ππ): R² 0.003 → 0.930 (masshead2)',
-    'Node repr → p (px/py/pz): R² ≈ 0 both before and after',
-    'Mass supervision moves mass information into the edge representation — confirmed end-to-end',
-    'Nodes remain unreadable for momentum → addressed by the momentum head (to be re-probed)',
-], Inches(0.7), Inches(1.6), Inches(6.0), Inches(4.8), size=BODY_SM)
-add_pic(s, FIG + '/probe_r2.png', Inches(7.0), Inches(2.4), width=Inches(5.9))
+    'RC answers: which node is the source of the chain? (Shah & Zaman)',
+    'For each candidate root v: root the tree there, measure subtree sizes τ(u)',
+    'log R(v) = −Σ log τ(u); the root maximizes it (right: B wins)',
+    'Struct head: regress the normalized RC value; source head (v36): predict the argmax root',
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(4.8), size=BODY_SM)
+add_pic(s, FIG + '/rc_calc.png', Inches(7.0), Inches(2.2), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
-              'Implication: the probe is the check that supervision actually wrote the physics into the representation',
+              'Implication: RC gives a physics-motivated "root-ness" target — no manual labels needed',
               size=12, color=GRAY, italic=True)
 
 # ============ S15 Part 4: controlled failures ============
