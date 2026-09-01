@@ -264,7 +264,21 @@ add_bullets(s, [
 ], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.5), size=BODY_SM)
 add_pic(s, FIG + '/chain_lca_curves.png', Inches(0.8), Inches(3.95), width=Inches(11.9))
 
-# ============ S6 Part 2: physics supervision concept ============
+# ============ S6 Why chains die ============
+s = new_slide(6)
+add_title_bar(s, 'Why Chains Die: Rare Classes + Misclassification', 'Chain-CE fixes the training signal for the rare structural classes')
+add_bullets(s, [
+    'Structural edges are ~0.1% of all edges — the GNN is weakest exactly there (esp. class 2)',
+    'One misclassified structural edge → pruned → the whole chain dies',
+    'Chain-CE (v38) supervises truth-chain edge classes directly → chains survive',
+], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.3), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_imbalance.png', Inches(0.7), Inches(3.7), width=Inches(6.3))
+add_pic(s, FIG + '/chain_lca_before_after.png', Inches(7.1), Inches(3.7), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.7, 11.8, 0.4,
+              'class 2 (sister) is the structural bottleneck — rare AND hardest to classify; the chain losses target exactly this',
+              size=12, color=GRAY, italic=True)
+
+# ============ S7 Part 2: physics supervision concept ============
 s = new_slide(6)
 add_title_bar(s, 'Part 2 — Supervising Representations with Physics', 'One common idea behind several heads')
 add_bullets(s, [
@@ -277,8 +291,8 @@ add_bullets(s, [
     'Verification: linear probes on the frozen backbone (Ridge regression)',
 ], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.4), size=BODY_SM)
 
-# ============ S7 mass head ============
-s = new_slide(7)
+# ============ S8 mass head ============
+s = new_slide(8)
 add_title_bar(s, 'The Mass Head: Main Result', 'Edge-level regression of log10(m_ππ)')
 add_bullets(s, [
     'Same-mother track pairs sit near resonance masses → the edge representation must encode sister relations',
@@ -306,7 +320,7 @@ add_bullets(s, [
 ], Inches(0.8), Inches(4.5), Inches(11.8), Inches(2.6), size=BODY_SM)
 
 # ============ S9 probe ============
-s = new_slide(9)
+s = new_slide(10)
 add_title_bar(s, 'Verification: Linear Probes on the Frozen Backbone', 'Ridge regression; R² of the physical quantity')
 add_table(s, [
     ['Probe', 'v38', 'masshead2'],
@@ -318,8 +332,8 @@ add_bullets(s, [
     'Nodes remain unreadable for momentum → addressed by the momentum head (to be re-probed)',
 ], Inches(0.8), Inches(3.7), Inches(11.8), Inches(2.8), size=BODY_SM)
 
-# ============ S10 controlled failures ============
-s = new_slide(10)
+# ============ S11 controlled failures ============
+s = new_slide(11)
 add_title_bar(s, 'Part 3 — Controlled Failures and Their Lessons')
 add_bullets(s, [
     'PV subgraph training (v39-42): training on per-PV subgraphs while inference runs on the full graph',
@@ -331,7 +345,7 @@ add_bullets(s, [
 ], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.4), size=BODY_SM)
 
 # ============ S11 ongoing ============
-s = new_slide(11)
+s = new_slide(12)
 add_title_bar(s, 'Part 4 — Ongoing Attempts')
 add_bullets(s, [
     'Wider latent space (v53): tracks nodes 32-dim, tt edges 24-dim — 16-dim sits at the physical-DOF lower bound',
@@ -341,8 +355,8 @@ add_bullets(s, [
     'Chain scoring for trigger assistance: criteria AUC 0.90 / 0.78 (realistic); training ready, needs GPU',
 ], Inches(0.8), Inches(1.4), Inches(11.8), Inches(5.6), size=BODY_SM)
 
-# ============ S12 next + questions ============
-s = new_slide(12)
+# ============ S13 next + questions ============
+s = new_slide(13)
 add_title_bar(s, 'Next Steps and Open Questions')
 add_bullets(s, [
     'Resume the wider-latent training to 150 ep; layer struct + mom at reduced weights',

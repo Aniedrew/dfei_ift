@@ -117,5 +117,94 @@ out2 = f'{FIG}/chain_lca_where.png'
 plt.savefig(out2, dpi=150, bbox_inches='tight')
 plt.close()
 
+# ---------- Figure 3: class imbalance vs per-class accuracy ----------
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 3.4))
+
+# (a) edge-class distribution (log scale)
+ax = axes[0]
+classes = ['class 0', 'class 1', 'class 2', 'class 3']
+counts = [49814070, 21786, 19298, 1012]          # from a full eval (20 test files)
+frac = np.array(counts) / sum(counts)
+bars = ax.bar(classes, frac, color=[GRAY, BLUE, ORANGE, BLUE], width=0.55)
+for b, f in zip(bars, frac):
+    ax.text(b.get_x() + b.get_width() / 2, f * 1.4, f'{f * 100:.3f}%',
+            ha='center', fontsize=9, fontweight='bold', color='#222222')
+ax.set_yscale('log'); ax.set_ylim(1e-6, 3)
+ax.set_ylabel('fraction of all edges', fontsize=10)
+ax.set_title('Edge-class distribution (log scale)', fontsize=12, fontweight='bold')
+ax.grid(axis='y', alpha=0.3)
+
+# (b) per-class accuracy
+ax = axes[1]
+acc = [98.08, 77.43, 49.17, 60.77]               # masshead2 baseline per-class accuracy
+bars = ax.bar(classes, acc, color=[GRAY, BLUE, ORANGE, BLUE], width=0.55)
+for b, v in zip(bars, acc):
+    ax.text(b.get_x() + b.get_width() / 2, v + 1.5, f'{v:.1f}%',
+            ha='center', fontsize=10, fontweight='bold', color='#222222')
+ax.set_ylim(0, 110)
+ax.set_ylabel('accuracy (%)', fontsize=10)
+ax.set_title('Per-class accuracy (best model)', fontsize=12, fontweight='bold')
+ax.grid(axis='y', alpha=0.3)
+ax.annotate('class 2 = rare AND hardest\n→ structural bottleneck', xy=(2, 49.17),
+            xytext=(0.6, 20), fontsize=10, color=ORANGE,
+            arrowprops=dict(arrowstyle='->', color=ORANGE))
+
+fig.suptitle('The GNN is weakest exactly where classes are rarest', fontsize=13, fontweight='bold', color=BLUE)
+plt.tight_layout(rect=[0, 0, 1, 0.92])
+out3 = f'{FIG}/chain_lca_imbalance.png'
+plt.savefig(out3, dpi=150, bbox_inches='tight')
+plt.close()
+
+# ---------- Figure 4: before / after tree ----------
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.4))
+nodes = {'B': (45, 38), 'J/psi': (24, 24), 'K': (68, 24), 'mu+': (12, 10), 'mu-': (36, 10)}
+tree = [('B', 'J/psi', '1'), ('B', 'K', '1'), ('J/psi', 'mu+', '1'),
+        ('J/psi', 'mu-', '1'), ('mu+', 'mu-', '2')]
+bgpts = [(90, 8), (58, 2)]
+
+for ax, (title, bad_edge) in zip(axes, [
+        ('BEFORE — no chain-CE', ('J/psi', 'mu-')),
+        ('AFTER — with chain-CE', None)]):
+    ax.set_xlim(0, 105); ax.set_ylim(0, 52); ax.axis('off')
+    # background edges (dotted gray)
+    for bpt in bgpts:
+        for (x, y) in nodes.values():
+            ax.plot([bpt[0], x], [bpt[1], y], color=GRAY, ls=':', lw=0.9, alpha=0.45)
+    # tree edges
+    for a, b, lab in tree:
+        (x1, y1), (x2, y2) = nodes[a], nodes[b]
+        if (a, b) == bad_edge:
+            ax.plot([x1, x2], [y1, y2], color=RED, lw=3.0, ls='--')
+            ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2, 'misclassified as class 0\n→ pruned → chain dies',
+                    fontsize=8, color=RED, ha='left')
+        else:
+            ax.plot([x1, x2], [y1, y2], color=GREEN, lw=2.4)
+            if lab == '2':
+                ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2, f'class {lab}', fontsize=8, color=GREEN)
+            elif lab == '1':
+                ax.text((x1 + x2) / 2 + 2, (y1 + y2) / 2 - 2.5, f'class {lab}', fontsize=8, color=GREEN)
+    # nodes
+    for name, (x, y) in nodes.items():
+        c = Circle((x, y), 3.0, fc='#EAEFF8', ec=BLUE, lw=1.5)
+        ax.add_patch(c)
+        ax.text(x, y + 4.3, name, ha='center', fontsize=9, color='#222222')
+    for bpt in bgpts:
+        c = Circle(bpt, 2.4, fc='white', ec=GRAY, lw=1.1, ls=':')
+        ax.add_patch(c)
+    # verdict
+    if bad_edge:
+        ax.text(50, 49.5, title, ha='center', fontsize=11, fontweight='bold', color=RED)
+        ax.text(50, 1.5, 'result: chain broken ✗', ha='center', fontsize=10, color=RED)
+    else:
+        ax.text(50, 49.5, title, ha='center', fontsize=11, fontweight='bold', color=GREEN)
+        ax.text(50, 1.5, 'result: chain recovered ✓', ha='center', fontsize=10, color=GREEN)
+
+plt.tight_layout()
+out4 = f'{FIG}/chain_lca_before_after.png'
+plt.savefig(out4, dpi=150, bbox_inches='tight')
+plt.close()
+
 print('[ok]', out1)
 print('[ok]', out2)
+print('[ok]', out3)
+print('[ok]', out4)
