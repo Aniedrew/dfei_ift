@@ -18,7 +18,7 @@ GREEN = '#2CA02C'
 GRAY = '#666666'
 
 # ---------- Figure 1: sigmoid shape vs temperature ----------
-w = np = __import__('numpy')
+import numpy as np
 w = np.linspace(0.0, 1.0, 400)
 cut = 0.85
 taus = [1.0, 0.3, 0.1]
@@ -26,12 +26,18 @@ taus = [1.0, 0.3, 0.1]
 fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
 colors = {1.0: BLUE, 0.3: ORANGE, 0.1: RED}
 
+# hard cut reference (step at cut, no mask)
+mask_hard = (w >= cut).astype(float)
+weff_hard = np.where(w >= cut, w, 0.0)
+axes[0].plot(w, mask_hard, lw=2.2, color='k', ls='--', label='hard cut (τ → 0)')
+axes[1].plot(w, weff_hard, lw=2.2, color='k', ls='--', label='hard cut (τ → 0)')
+
 for tau in taus:
     mask = 1 / (1 + np.exp(-(w - cut) / tau))
     weff = w * mask
     axes[0].plot(w, mask, lw=2.5, color=colors[tau],
-                 label=f'τ = {tau}  (early)' if tau == 1.0 else
-                      (f'τ = {tau}' if tau == 0.3 else 'τ = 0.1  (late)'))
+                 label=f'τ = {tau}  (start of annealing)' if tau == 1.0 else
+                      (f'τ = {tau}' if tau == 0.3 else 'τ = 0.1  (end of annealing)'))
     axes[1].plot(w, weff, lw=2.5, color=colors[tau])
 
 for ax in axes:
