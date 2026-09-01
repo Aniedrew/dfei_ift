@@ -211,8 +211,8 @@ add_bullets(s, [
     'Since fixing a silent class-weight bug, the line has raised',
     ('PerfectReco 23.9% → 32.7%   (+8.8pp)', 1),
     ('AllParticles 43.4% → 55.9%   (+12.5pp)', 1),
-], Inches(0.8), Inches(1.5), Inches(11.8), Inches(2.0), size=BODY_SM)
-add_pic(s, FIG + '/progress_line_v31_v47.png', Inches(1.2), Inches(3.4), width=Inches(10.9))
+], Inches(0.7), Inches(1.6), Inches(6.0), Inches(4.6), size=BODY_SM)
+add_pic(s, FIG + '/progress_line_v31_v47.png', Inches(7.0), Inches(2.3), width=Inches(5.9))
 
 # ============ S3 Outline ============
 s = new_slide(3)
@@ -260,40 +260,42 @@ add_bullets(s, [
     'The main LCAG loss is a global cross-entropy over every edge → its gradient is ~99.9% "predict background"',
     'Consequence: rare structural edges are undertrained → misclassified → chains break',
     'Fixes in Part 1: class-2 weighting (3.0 → 2.0), then hinge (v37), then chain-CE (v38)',
-], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.4), size=BODY_SM)
-add_pic(s, FIG + '/chain_lca_dilution.png', Inches(1.7), Inches(3.8), width=Inches(9.9))
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.2), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_dilution.png', Inches(7.0), Inches(2.6), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
               'Implication: with ~1000 background edges per structural edge, the global CE alone cannot teach the model classes 1/2/3',
               size=12, color=GRAY, italic=True)
 
-# ============ S6 Fix 1 (v37): hinge ============
+# ============ S6 Reward 1 (v37): hinge ============
 s = new_slide(6)
-add_title_bar(s, 'Fix 1 (v37): Hinge — Stay Confident', 'An extra loss that keeps chain edges confidently classified')
+add_title_bar(s, 'Reward 1 (v37): Hinge — Confidence Bonus', 'A training-only reward that pays out when chain edges are confidently classified')
 add_bullets(s, [
-    'Confidence: per edge the LCAG head gives a 4-class softmax (p0…p3); confidence = max(pk)',
-    'Loss = max(0, margin − confidence), margin 0.3 — added as an extra term to the total loss',
-    'Applied ONLY on truth-chain edges — the true chains are known from MC truth during training',
-    'Role: chain edges give the global CE almost no gradient → the hinge makes sure they are at least confident',
-    'Limitation: it demands confidence, not the right class — CE (next slide) adds the "which class"',
-], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.4), size=BODY_SM)
-add_pic(s, FIG + '/chain_lca_hinge.png', Inches(0.9), Inches(3.75), width=Inches(11.5))
+    'It is a loss term that behaves like a reward: be confident on a chain edge → pay nothing',
+    'Confidence comes from the LCAG head: per-edge 4-class softmax (p0…p3), confidence = max(pk)',
+    'Penalty = max(0, margin − confidence), margin 0.3 → zero once confidence ≥ 0.3',
+    'Paid ONLY on truth-chain edges — the true chains are known from MC truth during training',
+    'Role: chain edges give the global CE almost no gradient → hinge keeps them confident; CE (next) fixes "which class"',
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.3), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_hinge_mechanism.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
+add_pic(s, FIG + '/chain_lca_hinge_curve.png', Inches(7.0), Inches(4.15), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.9, 11.8, 0.4,
-              'Implication: confidence here is max(pk) from the LCAG head — not the pruning weight w; the loss lives on truth-chain edges only',
+              'Implication: hinge is a training-only confidence bonus on chain edges — confidence = max(pk), not the pruning weight w',
               size=12, color=GRAY, italic=True)
 
-# ============ S7 Fix 2 (v38): chain cross-entropy ============
+# ============ S7 Reward 2 (v38): chain cross-entropy ============
 s = new_slide(7)
-add_title_bar(s, 'Fix 2 (v38): Chain Cross-Entropy', 'Be the RIGHT class — on chain edges only')
+add_title_bar(s, 'Reward 2 (v38): Chain-CE — Correctness Bonus', 'A training-only reward for being the RIGHT class, on chain edges')
 add_bullets(s, [
     'CE = −log(p_true): p_true is the probability the model assigns to the edge’s TRUE class',
-    'Confident and right (p_true → 1) → CE ≈ 0; unsure or wrong → CE large',
-    'Chain-CE (v38): added ON TOP of the hinge, on truth-chain edges (classes 1/2/3) → direct, undiluted gradient',
+    'Right and confident (p_true → 1) → penalty ≈ 0; unsure or wrong → penalty large',
+    'Chain-CE (v38): added ON TOP of the hinge, paid on truth-chain edges (classes 1/2/3) → direct, undiluted gradient',
     'v37 → v38 (weight 2.0 + chain-CE + cut 0.85): PerfectReco 27.3% → 29.3%',
     'Net effect of Part 1 (v31 → v38): 23.9% → 29.3%',
-], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.4), size=BODY_SM)
-add_pic(s, FIG + '/chain_lca_ce.png', Inches(0.9), Inches(3.75), width=Inches(11.5))
+], Inches(0.7), Inches(1.5), Inches(6.0), Inches(5.3), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_ce_curve.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
+add_pic(s, FIG + '/chain_lca_ce_where.png', Inches(7.0), Inches(4.15), width=Inches(5.9))
 add_flow_text(s, 0.8, 6.9, 11.8, 0.4,
-              'Implication: same loss function as the global CE — the fix is WHERE it is applied, not which loss',
+              'Implication: same function as the global CE — the reward is WHERE it is paid (chain edges only)',
               size=12, color=GRAY, italic=True)
 
 # ============ S8 Why chains die (1/2): class imbalance ============
@@ -302,10 +304,11 @@ add_title_bar(s, 'Why Chains Die (1/2): The Class Imbalance', 'Structural edges 
 add_bullets(s, [
     'class 0 (background) is 99.9% of edges; each structural class is ~0.04%',
     'The GNN is weakest exactly on the rarest classes — especially class 2 (sister)',
-    'Right panel: measured per-class accuracy — worst exactly on the rare structural classes',
-], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.3), size=BODY_SM)
-add_pic(s, FIG + '/chain_lca_imbalance.png', Inches(1.2), Inches(3.75), width=Inches(10.9))
-add_flow_text(s, 0.8, 6.8, 11.8, 0.4,
+    'Per-class accuracy: worst exactly on the rare structural classes',
+], Inches(0.7), Inches(1.7), Inches(6.0), Inches(4.6), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_imbalance_dist.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
+add_pic(s, FIG + '/chain_lca_imbalance_acc.png', Inches(7.0), Inches(4.2), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
               'Implication: without extra supervision, the classifier barely learns classes 1/2/3 — the chain losses exist to fix this',
               size=12, color=GRAY, italic=True)
 
@@ -316,9 +319,10 @@ add_bullets(s, [
     'At inference, an edge the classifier calls class 0 is pruned',
     'If ANY structural edge of a chain is misclassified, the whole chain dies',
     'Chain-CE (v38) supervises truth-chain edge classes directly → chains survive',
-], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.3), size=BODY_SM)
-add_pic(s, FIG + '/chain_lca_before_after.png', Inches(1.2), Inches(3.75), width=Inches(10.9))
-add_flow_text(s, 0.8, 6.8, 11.8, 0.4,
+], Inches(0.7), Inches(1.7), Inches(6.0), Inches(4.6), size=BODY_SM)
+add_pic(s, FIG + '/chain_lca_before.png', Inches(7.0), Inches(1.5), width=Inches(5.9))
+add_pic(s, FIG + '/chain_lca_after.png', Inches(7.0), Inches(4.15), width=Inches(5.9))
+add_flow_text(s, 0.8, 6.85, 11.8, 0.4,
               'Implication: chain survival depends on every structural edge being classified correctly — that is what the hinge + chain-CE provide',
               size=12, color=GRAY, italic=True)
 
