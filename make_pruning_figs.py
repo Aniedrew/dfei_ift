@@ -36,7 +36,9 @@ for tau in taus:
 
 for ax in axes:
     ax.axvline(cut, color=GRAY, ls='--', lw=1.2)
-    ax.text(cut, ax.get_ylim()[0] + 0.04, '  cut', color=GRAY, fontsize=11)
+    ax.axvline(0.9, color=GREEN, ls=':', lw=1.4)
+    ax.text(cut, ax.get_ylim()[0] + 0.02, ' cut = 0.85\n(fixed per run)', color=GRAY, fontsize=10)
+    ax.text(0.9, ax.get_ylim()[1] - 0.14, ' 0.9 = inference\nthreshold', color=GREEN, fontsize=10)
     ax.set_xlabel('w  (node/edge confidence, 0–1)', fontsize=12)
     ax.grid(alpha=0.3)
 

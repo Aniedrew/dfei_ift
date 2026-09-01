@@ -242,9 +242,9 @@ add_flow_box(s, 9.12, 4.0, 1.5, 0.85, 'Weight MLP\n(sigmoid head)', size=9)
 add_flow_arrow(s, 'right', 10.68, 4.22, 0.32, 0.4)
 add_flow_box(s, 11.05, 4.0, 1.0, 0.85, 'w ∈ [0,1]', size=10, bold=True)
 add_flow_arrow(s, 'down', 11.42, 4.88, 0.3, 0.42)
-add_flow_box(s, 9.95, 5.32, 3.1, 1.05, 'Soft mask\nw_eff = w·σ((w−cut)/τ)\nτ: 1.0 → 0.1 (annealed)',
-             fill='#FDEBD0', line=RED, size=10, bold=True)
-add_flow_text(s, 7.2, 5.42, 2.7, 0.8, 'τ annealed during\ntraining (1.0 → 0.1)', size=9, color=RED)
+add_flow_box(s, 9.95, 5.32, 3.1, 1.05, 'Soft mask\nw_eff = w·σ((w−cut)/τ)\ncut fixed per run (0.85)\nτ annealed: 1.0 → 0.1',
+             fill='#FDEBD0', line=RED, size=9, bold=True)
+add_flow_text(s, 7.2, 5.42, 2.7, 0.8, 'within a run:\ncut fixed, τ anneals\n→ same cut, sharper enforcement', size=8, color=RED)
 add_flow_arrow(s, 'right', 9.9, 5.72, 0.5, 0.25, color=RED)
 add_flow_arrow(s, 'left', 9.4, 5.9, 0.55, 0.25, color=GREEN)
 add_flow_box(s, 6.9, 6.0, 2.4, 0.8, 'weighted message passing\n(back into the GN blocks)', fill=LIGHT, line=GREEN, size=9)
