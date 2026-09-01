@@ -12,6 +12,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE
 
 BASE = '/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn'
 FIG = BASE + '/meeting_figs'
@@ -120,6 +121,42 @@ def add_pic(slide, path, left, top, width=None, height=None):
     return False
 
 
+def add_flow_box(slide, x, y, w, h, text, fill=LIGHT, line=BLUE, size=10, bold=False):
+    """Native rounded-rectangle box for the flow chart (adjustable in PowerPoint)."""
+    sh = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
+    sh.fill.solid(); sh.fill.fore_color.rgb = fill
+    sh.line.color.rgb = line; sh.line.width = Pt(1.6)
+    tf = sh.text_frame; tf.word_wrap = True
+    tf.margin_left = tf.margin_right = Inches(0.03)
+    tf.margin_top = tf.margin_bottom = Inches(0.01)
+    for i, ln in enumerate(text.split('\n')):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.alignment = PP_ALIGN.CENTER
+        r = p.add_run(); r.text = ln
+        r.font.size = Pt(size); r.font.bold = bold; r.font.color.rgb = DARK; r.font.name = FONT
+    return sh
+
+
+def add_flow_arrow(slide, shape='right', x=0.0, y=0.0, w=0.3, h=0.3, color=BLUE):
+    """Native block arrow (right/down/left/up), adjustable in PowerPoint."""
+    m = {'right': MSO_SHAPE.RIGHT_ARROW, 'down': MSO_SHAPE.DOWN_ARROW,
+         'left': MSO_SHAPE.LEFT_ARROW, 'up': MSO_SHAPE.UP_ARROW}
+    sh = slide.shapes.add_shape(m[shape], Inches(x), Inches(y), Inches(w), Inches(h))
+    sh.fill.solid(); sh.fill.fore_color.rgb = color
+    sh.line.fill.background()
+    return sh
+
+
+def add_flow_text(slide, x, y, w, h, text, size=9, color=GRAY, italic=False):
+    tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+    tf = tb.text_frame; tf.word_wrap = True
+    p = tf.paragraphs[0]; p.alignment = PP_ALIGN.CENTER
+    r = p.add_run(); r.text = text
+    r.font.size = Pt(size); r.font.color.rgb = color
+    r.font.name = FONT; r.font.italic = italic
+    return tb
+
+
 def add_footer(slide, idx):
     tb = slide.shapes.add_textbox(Inches(0.55), Inches(7.12), Inches(12.2), Inches(0.3))
     tf = tb.text_frame
@@ -187,7 +224,22 @@ add_bullets(s, [
     'Cut aligned to inference and tightened over versions: 0.5 (v36) → 0.7 (v37) → 0.85 (v38) → 0.9 (inference)',
 ], Inches(0.8), Inches(1.35), Inches(11.8), Inches(2.6), size=BODY_SM)
 add_pic(s, FIG + '/pruning_sigmoid_tau.png', Inches(0.7), Inches(3.95), width=Inches(6.3))
-add_pic(s, FIG + '/pruning_flow.png', Inches(7.1), Inches(4.15), width=Inches(5.9))
+# ---- native flow chart (adjustable shapes) ----
+add_flow_box(s, 7.2, 4.0, 1.5, 0.85, 'GNN block\n(node/edge\nreprs)', size=9)
+add_flow_arrow(s, 'right', 8.76, 4.22, 0.32, 0.4)
+add_flow_box(s, 9.12, 4.0, 1.5, 0.85, 'Weight MLP\n(sigmoid head)', size=9)
+add_flow_arrow(s, 'right', 10.68, 4.22, 0.32, 0.4)
+add_flow_box(s, 11.05, 4.0, 1.0, 0.85, 'w ∈ [0,1]', size=10, bold=True)
+add_flow_arrow(s, 'down', 11.42, 4.88, 0.3, 0.42)
+add_flow_box(s, 9.95, 5.32, 3.1, 1.05, 'Soft mask\nw_eff = w·σ((w−cut)/τ)\nτ: 1.0 → 0.1 (annealed)',
+             fill='#FDEBD0', line=RED, size=10, bold=True)
+add_flow_text(s, 7.2, 5.42, 2.7, 0.8, 'τ annealed during\ntraining (1.0 → 0.1)', size=9, color=RED)
+add_flow_arrow(s, 'right', 9.9, 5.72, 0.5, 0.25, color=RED)
+add_flow_arrow(s, 'left', 9.4, 5.9, 0.55, 0.25, color=GREEN)
+add_flow_box(s, 6.9, 6.0, 2.4, 0.8, 'weighted message passing\n(back into the GN blocks)', fill=LIGHT, line=GREEN, size=9)
+add_flow_arrow(s, 'down', 11.6, 6.4, 0.3, 0.4, color=BLUE)
+add_flow_box(s, 10.3, 6.75, 2.7, 0.4, 'pruning loss vs truth (BCE)\n(mask makes it differentiable)', fill=LIGHT, line=BLUE, size=8)
+add_flow_text(s, 7.2, 6.9, 2.6, 0.35, 'inference (no mask): keep if w ≥ 0.9', size=9, color=GRAY, italic=True)
 
 # ============ S5 Part 1: LCA supervision adjustment ============
 s = new_slide(5)
