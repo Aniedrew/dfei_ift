@@ -1,0 +1,100 @@
+# DFEI 逐项消融链 — 503: Part2: 链内 LCA 一致性 hinge (保持置信, margin 0.3)
+settings:
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
+  sample: [inclusive_00342442]
+  nfiles: [200]
+  precision: 32
+  batch_size: 8
+  lr: 3.0e-05
+  weight_decay: 1.0e-05
+  epochs: 20
+  gacc: 2
+  ngpu: 1
+  ncpu: 2
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+  log_version: 503
+inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
+  edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
+  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_loss: true, chain_lca_loss_weight: 2.0,
+  chain_lca_margin: 0.3, chain_lca_filter: false}
+evaluate:
+  sample: [inclusive_00342442]
+  nfiles: [20]
+  over_write: ab04_hinge
+DFEI:
+  GNblocks:
+    MLP_forward:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: None
+    MLP_infer:
+      dropout: 0.01
+      layers: [-1, 16, 16, 16, 1]
+      norm: None
+    nBlocks: 4
+    use_edge_weights: true
+    use_globals: true
+    use_node_weights: true
+    weighted_pass: true
+  decoder:
+    global:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [None, None]
+    pvs:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [None, None]
+    tracks:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [None, None]
+    tracks_pvs:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [None, None]
+    tracks_tracks:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [None, None]
+    usage: true
+  edge_types: [tracks_tracks, tracks_pvs]
+  encoder:
+    global:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [graph_norm, None]
+    pvs:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [graph_norm, None]
+    tracks:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [graph_norm, None]
+    tracks_pvs:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [graph_norm, None]
+    tracks_tracks:
+      dropout: 0.01
+      layers: [-1, 128, 128, 16]
+      norm: [graph_norm, None]
+    usage: true
+  node_types: [tracks, pvs]
+  op_trafo:
+    MLP:
+      dropout: 0.01
+      layers: [-1, -1]
+      norm: None
+    global: None
+    pv: None
+    tr: None
+    tr_pv: None
+    tr_tr: 4
+    usage: true
+  use_pid: 'true'
+  cpt: 502

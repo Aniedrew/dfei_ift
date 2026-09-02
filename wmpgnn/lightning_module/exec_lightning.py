@@ -57,7 +57,8 @@ def training(module, configs, trn_loader=None, val_loader=None, chunkloader=None
     )
 
     log_dir = configs["log_dir"]
-    tb_logger = TensorBoardLogger(save_dir=log_dir, name=model)
+    tb_logger = TensorBoardLogger(save_dir=log_dir, name=model,
+                                  version=configs["settings"].get("log_version", None))
     csv_logger = CSVLogger(save_dir=log_dir, name=model, version=tb_logger.version)
 
     configs = configs["settings"]
