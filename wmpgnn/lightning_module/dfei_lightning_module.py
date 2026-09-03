@@ -248,6 +248,12 @@ class DFEILightningModule(L.LightningModule):
             has_mh2 = any(k.startswith("model.node_mom_head.") for k in checkpoint.get("state_dict", {}))
             if not has_mh2:
                 new_heads.append("node_mom_head")
+        # ==== 试验: track 级自注意力 (新参数, 旧 ckpt 无) ====
+        track_attn = getattr(self.model, "_track_attn", None)
+        if track_attn is not None:
+            has_ta = any(k.startswith("model._track_attn.") for k in checkpoint.get("state_dict", {}))
+            if not has_ta:
+                new_heads.append("track_attn")
         if new_heads:
             print(f"[heads] 旧 checkpoint 无 {new_heads} 头: "
                   "重置 optimizer/lr_scheduler 状态 (新头无历史动量, 从当前 lr 重新起步)")
@@ -269,10 +275,11 @@ class DFEILightningModule(L.LightningModule):
             missing = [k for k in self.state_dict() if k not in state_dict
                        and (k.startswith("model.chain_scorer") or k.startswith("model.source_head")
                             or k.startswith("model.pv_cluster_head") or k.startswith("model.edge_mass_head")
-                            or k.startswith("model.node_struct_head") or k.startswith("model.node_mom_head"))]
+                            or k.startswith("model.node_struct_head") or k.startswith("model.node_mom_head")
+                            or k.startswith("model._track_attn"))]
             if missing:
                 print(f"[heads] 旧 checkpoint 无新头参数 ({len(missing)} 个: "
-                      f"chain_scorer/source_head/pv_cluster_head/edge_mass_head/node_struct_head/node_mom_head), 新头随机初始化续训")
+                      f"chain_scorer/source_head/pv_cluster_head/edge_mass_head/node_struct_head/node_mom_head/_track_attn), 新头随机初始化续训")
                 return super().load_state_dict(state_dict, strict=False)
         return super().load_state_dict(state_dict, strict=strict)
 

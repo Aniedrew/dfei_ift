@@ -4,6 +4,7 @@ import torch.nn as nn
 from wmpgnn.model.model_helper import *
 from wmpgnn.model.gnn.hetero_graphcoder import HeteroGraphCoder
 from wmpgnn.model.gnn.hetero_output_trafo import HeteroGraphTrafo
+from wmpgnn.model.attention import TrackSelfAttention
 
 import pytorch_lightning as pl
 
@@ -45,6 +46,17 @@ class DFEI_HGNN(pl.LightningModule):
         # 温度退火由 lightning module 每 epoch 调用 set_b2_tau 注入到各 block
         self._b2_enable = bool(config["GNblocks"].get("b2", False))
 
+        # ==== 试验: track 级自注意力 (DFEI.node_attention = true) ====
+        # 插在 GN blocks 与 decoder 之间, 给每条 track 事件级上下文 (纯内容版, 方案2)。
+        self._track_attn = None
+        if config.get("node_attention", False):
+            gn = config["GNblocks"]
+            attn_dim = int(gn.get("MLP_forward_dim", {}).get("tracks",
+                                                             gn["MLP_forward"]["layers"][-1]))
+            n_heads = int(config.get("node_attention_heads", 4))
+            self._track_attn = TrackSelfAttention(attn_dim, n_heads)
+            print(f"[attention] track 级自注意力启用: dim={attn_dim}, heads={n_heads}")
+
     def set_b2_tau(self, tau: float):
         """注入当前温度到各 GN block (B2 退火; 非 B2 时无效果)。"""
         if self.GN_block and hasattr(self, "_blocks"):
@@ -65,6 +77,10 @@ class DFEI_HGNN(pl.LightningModule):
             data = core(data, init_graph_pid)
             if b < (len(self._blocks) - 1):
                 data = hetero_graph_concat(latent, data)
+
+        # ==== 试验: track 级自注意力 (同一事件内) ====
+        if self._track_attn is not None:
+            data["tracks"].x = self._track_attn(data["tracks"].x, data["tracks"].batch)
 
         if self.decode:
             data = self._decoder(data)

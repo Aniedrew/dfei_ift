@@ -23,7 +23,9 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn
 
 CONFIG=config_files/train_CERN_v38_masshead2_asym_resume.yaml
-CKPT_DIR=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_53/checkpoints
+# 从配置读固定续训目录 (log_version), 避免再查错目录
+CKPT_DIR=$(grep -oE 'log_version: [0-9]+' "$CONFIG" | grep -oE '[0-9]+$')
+CKPT_DIR=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_${CKPT_DIR}/checkpoints
 TARGET_EPOCH=149                      # 最后一个 epoch (epochs=150 -> 0..149)
 MAX_CHAIN=12
 CHAIN_FILE=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/v53_resume.chain_count
@@ -92,6 +94,9 @@ if [ $PREFLIGHT_RC -ne 0 ]; then
     echo "$M" > "$RETRY_COUNT_FILE"
     echo "[RETRY] 第 $M/$MAX_RETRY 次, sleep ${RETRY_SLEEP}s 后重排..."
     sleep $RETRY_SLEEP
+    for v in $(env | cut -d= -f1); do
+      echo " HOME PATH USER LOGNAME HOSTNAME SHELL PWD OMP_NUM_THREADS PYTORCH_CUDA_ALLOC_CONF CUDA_VISIBLE_DEVICES PYTHONPATH _CONDOR_IHEP_JOB_ID " | grep -q " $v " || unset "$v" 2>/dev/null
+    done
     hep_sub submit_train_cern_v53_resume.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
         -o logs/v53_resume.out -e logs/v53_resume.err
     echo "[RETRY] 已重提, 本次退出"

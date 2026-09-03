@@ -21,8 +21,10 @@ settings:
   node_sel: "true"
   pv_model: "None"
   calibration: False
-  # 续训起点: 提交脚本每次运行前自动改写为 version_53 里最新的 epoch_epoch=*.ckpt
-  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_53/checkpoints/epoch_epoch=74.ckpt"
+  # 固定续训目录 (version_54 已含 ep75-112 的续训段); resume_ckpt 由提交脚本每段改写
+  log_version: 54
+  # 续训起点: 提交脚本每次运行前自动改写为 version_54 里最新的 epoch_epoch=*.ckpt
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_54/checkpoints/epoch_epoch=112.ckpt"
 
 inference:
   LCA: true
