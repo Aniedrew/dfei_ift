@@ -200,7 +200,6 @@ settings:
   node_sel: 'true'
   precision: 32
   pv_model: None
-  resume_ckpt: /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_37/checkpoints/best-epoch=90-val_combined_loss=35.562.ckpt
   sample:
   - inclusive_00342442
   weight_decay: 1e-5
