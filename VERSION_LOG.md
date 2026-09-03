@@ -2,7 +2,7 @@
 
 > 用途：快速区分每个 version_XX 是干什么的、有什么改动、结果如何。
 > 数据口径：除注明外，均为 CERN 官方 MC（DFEI_IFT_20260702），thr0.9 同口径评估，20 测试文件。
-> 更新：2026-08-18（v38 训练中）
+> 更新：2026-09-03（v53 链式续训中 / 消融链 ab01 训练中 / v38+attention 试验已提交）
 
 ---
 
@@ -33,7 +33,7 @@
 | v50 | 消融 base（仅 mass，对照） | v47 ep113 | 5文件×10ep 小评估 | — | 29.67%（小口径） |
 | v51 | 消融 mom（+mom head） | v47 ep113 | 同上 | — | 30.46%（小口径） |
 | v52 | 消融 struct（+struct head） | v47 ep113 | 同上 | — | 30.46%（小口径） |
-| v53 | asym 扩展（tracks 32 / tt 边 24） | 从头 | 不对称 latent 维度 | 49.386（ep10，**训练中**） | — |
+| v53 | asym 扩展（tracks 32 / tt 边 24） | 从头 | 不对称 latent 维度 | — | —（未收敛，ep112 All 41.5/Perfect 24.2）|
 
 ---
 
@@ -190,3 +190,43 @@
 | v37 | 10.43 it/s | ~51 min（+13%，额外 loss 头代价）|
 
 GPU 分配注意：调度器会把多个作业塞同一物理卡（GPU_NOTE.md 有详查）；提交脚本已带 PREFLIGHT matmul 检测 + 失败自动重排（不指定节点）。
+
+---
+
+## 六、进行中的实验流水线（2026-09-03）
+
+三条线并行（组会/顾问建议的"回到 v31 逐步归因" + 宽 latent 补跑 + attention 新方向）：
+
+### 1. v53 宽 latent（asym）链式续训 — job 10243307 RUNNING
+- 背景：asym（tracks 32 / tt 边 24）从 0 起每次 ~75 ep 就被墙钟截断（~2.9 天/段），曾两次停在 ep74。
+- **链式续训**：`submit_train_cern_v53_resume.sh` 每段自动找最新 `epoch_epoch=*.ckpt` 续训，直到 ep149。
+- **坑（2026-09-03 已修）**：PL resume 每次写**新 version 目录**（v53→v54），而脚本原扫描 version_53 → 误判"无进展"停链。修复：配置钉死 `log_version: 54` + resume_ckpt 指向 version_54 ep112。
+- 现状：**ep114/149**（version_54）；ep112 自动评估 All **41.49** / Perfect **24.18**（未收敛，仍在上升）。cpt 标签 `v38_asym_mass_final`。
+
+### 2. 消融链（回到 v31 逐项归因）— job 10243310 RUNNING（ab01）
+- 目的（advisor 建议）：PPT 里每个优化同时叠加、无法单独归因 → 从 **v31 基线**出发，按 PPT 顺序每次只加一个优化（20 ep / 200 files / thr0.9 自动评估），终点 = 全优化模型；每步给 before/after 接 S2 折线图。
+- **贪心接受/回退**：每步起点 = 当前"已接受基线"的 best（`logs/ablation_chain.base` 记录，初始 v31：All 43.42/Perfect 23.93）；AllParticles 非降则接受并更新基线，否则回退（保留被否模型作负证据）。接受/回退都 Server酱 通知。
+- 步骤（config `train_CERN_v500_...yaml` 起，log_version 500-508，explicit log_version + DFEI.cpt 权重加载，版本目录干净独立）：
+  1. ab01(500) loss 再平衡（隔离 v36 配方非 PPT 项）
+  2. ab02(501) B2 可微剪枝 cut0.85 → **Part 1**
+  3. ab03(502) class2 加权 2.0 → **Part 2**
+  4. ab04(503) hinge
+  5. ab05(504) chain-CE
+  6. ab06(505) source head(RC) → **Part 3**
+  7. ab07(506) mass head
+  8. ab08(507) struct head(w0.3)
+  9. ab09(508) mom head(w0.2) → 全模型
+- 协议偏差：剪枝步 τ 固定 sharp 值 0.1（每步独立微调，重退火 20 ep 到不了 sharp）；接受指标用 AllParticles 而非 val（跨步 loss 组成不可比）；无噪声容差。
+- 期待：若低权重 struct+mom 通过（v48 失败后的未验证假设），终点可能超过 v47(32.7/55.9)；若被否则停在 ≈v47 并留下每步证据。
+
+### 3. v38 + track 级自注意力（attention 试验）— job 10243510 已提交
+- 动机：DFEI 官方续篇(2504.21844)未用 attention；想验证"事件级上下文"能否缓解 class0 稀释/隔离问题（见 PPT Part 4 讨论 + ParT/MLPF 文献调研）。
+- 实现（方案2 纯内容版）：`wmpgnn/model/attention.py` `TrackSelfAttention` — GN blocks 后、decoder 前，同事件多头自注意力（`tracks.batch` 掩码隔离跨事件），残差+LayerNorm，dim16/heads4，`DFEI.node_attention` 开关；旧 ckpt 经 load_state_dict 放松加载（新参数随机初始化）。
+- 冒烟测试抓到 2 个真 bug（掩码维度、输出 reshape 转置错位）已修；功能性验证（事件内一致/跨事件隔离）+ cpt=38 加载通过。
+- config `train_CERN_v38_attn.yaml`：cpt=38（v38 best）+ attention，20ep/200files，log_version 510。
+- **坑（2026-09-03 已修）**：从 v38 input_config 派生配置时带入了其残留 `resume_ckpt`(v37 ep90) → 与 max_epochs=20 冲突崩溃；已删除（教训：派生配置必须清 run 专属键）。
+- 对照：跑完 vs v38 基线（thr0.9 Perfect 29.26%）即干净 before/after；有效则下一步给注意力加 tt 边特征 bias（ParT 完全体）。
+
+### 链脚本共坑（均已在脚本内修复）
+- 作业内 env 常 >64KB，`hep_sub` 自重提交会报 env-too-big → 重提前白名单清环境（`strip_env`）。
+- GPU 分配不稳（坏的 2080Ti/L20 都可能被塞）→ 全部带 PREFLIGHT matmul 预检 + 失败自动重排（sleep 60-120s 后 `hep_sub` 自重启，计入 retry_count 防死循环）。
