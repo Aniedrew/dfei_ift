@@ -24,14 +24,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn
 
-# === 重提前压缩环境 (作业内 env 常 >64KB, hep_sub 提交会失败) ===
-strip_env() {
-  local keep="HOME PATH USER LOGNAME HOSTNAME SHELL PWD OMP_NUM_THREADS PYTORCH_CUDA_ALLOC_CONF CUDA_VISIBLE_DEVICES PYTHONPATH _CONDOR_IHEP_JOB_ID"
-  for v in $(env | cut -d= -f1); do
-    echo " $keep " | grep -q " $v " || unset "$v" 2>/dev/null
-  done
-}
-
 STEP_FILE=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/ablation_chain.step
 BASE_FILE=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/ablation_chain.base   # "ver all perf"
 CONFIGS=(ab01_rebal ab02_b2 ab03_cl2w ab04_hinge ab05_ce ab06_source ab07_mass ab08_struct ab09_mom)
@@ -99,7 +91,6 @@ if [ $PREFLIGHT_RC -ne 0 ]; then
   M=$((M+1)); echo "$M" > "$RETRY_COUNT_FILE"
   echo "[RETRY] 第 $M 次, sleep 60s 后重排..."
   sleep 60
-  strip_env
   hep_sub submit_ablation_chain.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
       -o logs/ablation_chain.out -e logs/ablation_chain.err
   echo "[RETRY] 已重提, 本次退出"
@@ -152,7 +143,6 @@ echo "$STEP" > "$STEP_FILE"
 read BASE_VER BASE_ALL BASE_PERF < "$BASE_FILE"
 if [ "$STEP" -lt "$N_STEPS" ]; then
   echo "[CHAIN] 下一步: ${CONFIGS[$STEP]} (从 version_${BASE_VER} 出发, $STEP/$N_STEPS), 重提交"
-  strip_env
   hep_sub submit_ablation_chain.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
       -o logs/ablation_chain.out -e logs/ablation_chain.err
 else
