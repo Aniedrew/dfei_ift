@@ -15,6 +15,50 @@ from torch_geometric.loader import DataLoader
 from wmpgnn.data_loader.helper import *
 
 
+def permute_event_order(evt, seed):
+    """在单个事件内随机重排节点编号（轨道节点与 PV 节点各一个置换）。
+
+    用途：检验模型/管线是否依赖输入数组的"排列顺序"。
+    该置换是**一致的**：节点特征、逐节点标签、以及两张边表的端点索引同步重映射，
+    因此图本身（连边关系 + 每条边/每个节点的属性）完全不变，只是编号被换了。
+    纯消息传递 GNN 没有位置编码、也不读索引，所以理论上指标应当逐位不变；
+    若指标明显变化，说明管线里有东西在吃"顺序"（例如并列时按序取第一个、top-k 截断）。
+
+    ⚠️ 约定（2026-09-16 修正过一处错）：设新编号 j 承载旧编号 pi[j] 的节点，
+       即 x_new = x_old[pi]。那么**旧边 (a,b) 在做完重编号后必须变成
+       (pi_inv[a], pi_inv[b])** —— 不是 (pi[a], pi[b])！后者会把图接错线
+       （等价于同时做了置换和"边反向映射"，图被改掉了），从而得到假阳性结论。
+
+    seed 只影响置换本身，用于跑不同 seed 来得到"置换噪声带"。
+    """
+    n = int(evt['tracks'].x.shape[0])
+    npv = int(evt['pvs'].x.shape[0])
+    g = torch.Generator().manual_seed(int(seed))
+    pi = torch.randperm(n, generator=g)
+    piv = torch.randperm(npv, generator=g)
+    inv = torch.empty_like(pi); inv[pi] = torch.arange(n)
+    inv_v = torch.empty_like(piv); inv_v[piv] = torch.arange(npv)
+
+    # 逐节点属性（x / ft / pid / part_keys ...）：首维与节点数相同的一律同步置换
+    for store, perm, size in ((evt['tracks'], pi, n), (evt['pvs'], piv, npv)):
+        for key in list(store.keys()):
+            val = store[key]
+            if torch.is_tensor(val) and val.dim() >= 1 and val.shape[0] == size:
+                setattr(store, key, val[perm])
+
+    # 轨道-轨道边：两端都是轨道索引 -> 用 pi 的逆
+    tt = evt[('tracks', 'to', 'tracks')]
+    tt.edge_index = inv[tt.edge_index]
+
+    # 轨道-PV 边：第 0 行是轨道索引，第 1 行是 PV 索引
+    tp = evt[('tracks', 'to', 'pvs')]
+    ei = tp.edge_index.clone()
+    ei[0] = inv[ei[0]]
+    ei[1] = inv_v[ei[1]]
+    tp.edge_index = ei
+    return evt
+
+
 class ChunkDataset(IterableDataset):
     # Loading a chunk of the dataset to cpu memory instead of all files
     def __init__(self, file_paths, configs, mode="train", n_chunks=32):
@@ -129,8 +173,14 @@ class ChunkDataset(IterableDataset):
                 idx = idx[torch.randperm(len(idx), generator=g)]
 
             # Yield events in shuffled order
+            perm_on = bool(self.configs.get("settings", {}).get("permute_graph_order", False))
+            perm_seed = int(self.configs.get("evaluate", {}).get("permute_seed", 111))
             for i, i_idx in enumerate(idx):
-                yield chunk_events[i_idx]
+                evt = chunk_events[i_idx]
+                if perm_on:
+                    # 顺序置换检验（见 permute_event_order 注释）
+                    evt = permute_event_order(evt, perm_seed + i)
+                yield evt
 
             del chunk_events
             gc.collect()

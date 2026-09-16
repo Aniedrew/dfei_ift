@@ -17,7 +17,8 @@ def get_blocks(config, node_types, edge_types):
     for i in range(n_gn_blocks):
         if i >= n_gn_blocks - n_ft_layers:
             add_ft_layer = True
-        blocks.append(HeteroGraphNetwork(config, node_types, edge_types, add_ft_layer))
+        blocks.append(HeteroGraphNetwork(config, node_types, edge_types, add_ft_layer,
+                                         context_last=(i == n_gn_blocks - 1)))
     return nn.ModuleList(blocks)
 
 

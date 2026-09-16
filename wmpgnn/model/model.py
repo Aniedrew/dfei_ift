@@ -47,15 +47,23 @@ class DFEI_HGNN(pl.LightningModule):
         self._b2_enable = bool(config["GNblocks"].get("b2", False))
 
         # ==== 试验: track 级自注意力 (DFEI.node_attention = true) ====
-        # 插在 GN blocks 与 decoder 之间, 给每条 track 事件级上下文 (纯内容版, 方案2)。
+        # 插在 GN blocks 与 decoder 之间, 给每条 track 事件级上下文。
+        # node_attention_edge_bias = true 时启用 ParT 式 tt 边特征作注意力 bias。
         self._track_attn = None
+        self._track_attn_edge = False
         if config.get("node_attention", False):
             gn = config["GNblocks"]
             attn_dim = int(gn.get("MLP_forward_dim", {}).get("tracks",
                                                              gn["MLP_forward"]["layers"][-1]))
             n_heads = int(config.get("node_attention_heads", 4))
-            self._track_attn = TrackSelfAttention(attn_dim, n_heads)
-            print(f"[attention] track 级自注意力启用: dim={attn_dim}, heads={n_heads}")
+            self._track_attn_edge = bool(config.get("node_attention_edge_bias", False))
+            edge_dim = None
+            if self._track_attn_edge:
+                edge_dim = int(gn.get("MLP_forward_dim", {}).get(
+                    "tracks_tracks", gn["MLP_forward"]["layers"][-1]))
+            self._track_attn = TrackSelfAttention(attn_dim, n_heads, edge_dim=edge_dim)
+            print(f"[attention] track 级自注意力启用: dim={attn_dim}, heads={n_heads}, "
+                  f"edge_bias={self._track_attn_edge}")
 
     def set_b2_tau(self, tau: float):
         """注入当前温度到各 GN block (B2 退火; 非 B2 时无效果)。"""
@@ -74,13 +82,22 @@ class DFEI_HGNN(pl.LightningModule):
         for b, core in enumerate(self._blocks):
             # ==== B2: 仅最后一个 GN block 模拟剪枝 (与推理剪枝作用于最终输出权重的位置一致) ====
             core._b2_active = b == (len(self._blocks) - 1) and bool(getattr(self, "_b2_enable", True))
+            # ==== 方案 A: 上下文剪枝头也只在最后一个 block 生效 ====
+            core._context_active = b == (len(self._blocks) - 1)
             data = core(data, init_graph_pid)
             if b < (len(self._blocks) - 1):
                 data = hetero_graph_concat(latent, data)
 
         # ==== 试验: track 级自注意力 (同一事件内) ====
         if self._track_attn is not None:
-            data["tracks"].x = self._track_attn(data["tracks"].x, data["tracks"].batch)
+            if self._track_attn_edge:
+                # ParT 完全体: tt 边特征 (encoder 级, GN 不更新 edges) 作注意力 bias
+                tt = data[('tracks', 'to', 'tracks')]
+                data["tracks"].x = self._track_attn(
+                    data["tracks"].x, data["tracks"].batch,
+                    edge_index=tt.edge_index, edge_feat=tt.edges)
+            else:
+                data["tracks"].x = self._track_attn(data["tracks"].x, data["tracks"].batch)
 
         if self.decode:
             data = self._decoder(data)

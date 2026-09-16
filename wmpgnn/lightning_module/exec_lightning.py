@@ -35,12 +35,18 @@ def training(module, configs, trn_loader=None, val_loader=None, chunkloader=None
 
     monitoring_loss = "val_combined_loss" if model == "DFEI" else "val_ft_loss"
 
-    early_stopping = EarlyStopping(
-        monitor=monitoring_loss,
-        verbose=True,
-        mode="min",
-        patience=15,
-    )
+    # 早停 patience 可配置: settings.early_stop_patience (默认 15 保持历史行为)。
+    # 世代长训需跑满预算, 配置里设 early_stop_patience: 0 即禁用早停
+    #  (或用 >= max_epochs 的值, 等效永不触发)。
+    _es_patience = int(configs["settings"].get("early_stop_patience", 15) or 0)
+    _es_callbacks = []
+    if _es_patience > 0:
+        _es_callbacks.append(EarlyStopping(
+            monitor=monitoring_loss,
+            verbose=True,
+            mode="min",
+            patience=_es_patience,
+        ))
 
     best_model_callback = ModelCheckpoint(
         filename=f"best-{{epoch:02d}}-{{{monitoring_loss}:.3f}}",
@@ -64,7 +70,7 @@ def training(module, configs, trn_loader=None, val_loader=None, chunkloader=None
     configs = configs["settings"]
     precision = configs.get("precision", "16-mixed")  # 32 / 16-mixed / bf16-mixed
     resume_ckpt = configs.get("resume_ckpt", None)  # 从已有 checkpoint 续训 (绝对路径)
-    _callbacks = [early_stopping, best_model_callback, last_epoch_callback]
+    _callbacks = _es_callbacks + [best_model_callback, last_epoch_callback]
     if resume_ckpt:  # 续训时重置早停状态, 否则 ckpt 里的 wait_count 会立即触发早停
         _callbacks.append(ResetEarlyStoppingOnResume())
     trainer = Trainer(

@@ -4,6 +4,7 @@ from collections import defaultdict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from wmpgnn.lightning_module.lightning_helper import *
 from wmpgnn.reconstruction.reconstruction import EventReconstruction
@@ -11,6 +12,103 @@ from wmpgnn.reconstruction.topk_selection import CandidateScorer, build_chain_sa
 from wmpgnn.performance.plotter import *
 from wmpgnn.performance.reco_accuracy import acc_four_class, obtain_reco_accuracy, acc_pv_asso
 from wmpgnn.performance.plot_results import plot_sig_pv_missasso, plot_sig_b_system_pv_missasso
+
+
+def focal_bce_with_logits(logits, targets, pos_weight=None, gamma=2.0):
+    """Focal BCE (Lin et al., 2017): 降低易分样本权重, 聚焦难分样本。
+
+    用于剪枝头 (少数类 recall 是瓶颈): 背景负样本易分、信号正样本难分,
+    故 focal 把梯度集中到"低置信"的信号径迹/链边上。gamma=0 退化为普通 BCE。
+    """
+    if gamma <= 0:
+        return F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight)
+    # pos_weight 由图外统计生成(在 CPU 上), 而 nn.BCEWithLogitsLoss 内部会搬设备,
+    # 裸 functional 调用不会 -> 必须显式对齐, 否则报 "found at least two devices".
+    if pos_weight is not None:
+        pos_weight = pos_weight.to(logits.device)
+    ce = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight, reduction="none")
+    p = torch.sigmoid(logits)
+    pt = p * targets + (1.0 - p) * (1.0 - targets)
+    return (ce * (1.0 - pt).pow(gamma)).mean()
+
+
+def truth_chain_labels(y, edge_index, n_nodes):
+    """每个节点的 truth 链 id (-1 = 不属于任何 chain)。
+
+    链 = 由 truth 非背景边 (y>0, 即 LCAG class1/2/3) 连成的连通分量。
+    图按事件 batch 拼接但事件间无边, 故直接对全图做并查集即可。
+    """
+    y_bin = (y > 0)
+    y_bin = y_bin.squeeze(-1) if y_bin.dim() > 1 else y_bin
+    a, b = edge_index[0][y_bin], edge_index[1][y_bin]
+    lab = torch.full((n_nodes,), -1, dtype=torch.long, device=edge_index.device)
+    if a.numel() == 0:
+        return lab
+    parent = list(range(n_nodes))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(a.numel()):
+        ra, rb = find(int(a[i])), find(int(b[i]))
+        if ra != rb:
+            parent[ra] = rb
+    touched = torch.zeros(n_nodes, dtype=torch.bool, device=edge_index.device)
+    touched[a] = True
+    touched[b] = True
+    roots = {find(int(i)) for i in touched.nonzero().flatten().tolist()}
+    remap = {r: k for k, r in enumerate(sorted(roots))}
+    idx = torch.arange(n_nodes, device=edge_index.device)
+    lab = torch.tensor([remap[find(int(i))] if bool(touched[i]) else -1 for i in idx.tolist()],
+                       dtype=torch.long, device=edge_index.device)
+    return lab
+
+
+def chain_min_scores(scores, chain_lab):
+    """按链取"最弱环节"得分 (per-chain min)。scores/chain_lab 均已过滤掉 lab<0。"""
+    scores = scores.reshape(-1)
+    chain_lab = chain_lab.reshape(-1)
+    uniq, inv = torch.unique(chain_lab, return_inverse=True)
+    m = torch.full((uniq.numel(),), 1e4, device=scores.device, dtype=scores.dtype)
+    return m.scatter_reduce(0, inv.reshape(-1), scores, reduce="amin")
+
+
+def chain_recall_loss(node_logits, edge_logits, y, edge_index, n_nodes, thr=0.5, tau=0.1):
+    """链级 min-pooling recall 损失。
+
+    指标是"整条链"级别的: 链内**最弱**的点/边掉到阈值以下 -> 整条链被剪掉 (记 0)。
+    逐元素 BCE 优化的是平均正确率, 与此目标不一致。本项直接惩罚
+    "每条真值链中最低分的环节":
+        L = -log sigmoid( (min_{v in chain} s_v - thr) / tau )
+    即把每条链的最弱环节顶到阈值以上。返回 (节点项, 边项), 均为标量或 None。
+    """
+    n_lab = truth_chain_labels(y, edge_index, n_nodes)
+    l_node = None
+    vn = n_lab >= 0
+    if vn.any():
+        s = torch.sigmoid(node_logits.squeeze(-1))[vn]
+        mn = chain_min_scores(s, n_lab[vn])
+        l_node = -torch.log(torch.sigmoid((mn - thr) / tau) + 1e-6).mean()
+    l_edge = None
+    y_bin = (y > 0)
+    y_bin = y_bin.squeeze(-1) if y_bin.dim() > 1 else y_bin
+    if y_bin.any() and edge_logits is not None:
+        el = edge_logits
+        if el.dim() > 1:
+            el = el.squeeze(-1) if el.size(-1) == 1 else None   # 仅支持逐边二分类头 (非 4 类 LCA 头)
+        if el is not None:
+            ea = edge_index[0][y_bin]                      # 每条真值边归到其所属链 (取起点节点的链 id)
+            e_lab = n_lab[ea]
+            ve = (e_lab >= 0)
+            if ve.any():
+                es = torch.sigmoid(el[y_bin])[ve]
+                me = chain_min_scores(es, e_lab[ve])
+                l_edge = -torch.log(torch.sigmoid((me - thr) / tau) + 1e-6).mean()
+    return l_node, l_edge
+
 
 
 class DFEILightningModule(L.LightningModule):
@@ -200,6 +298,23 @@ class DFEILightningModule(L.LightningModule):
         if self.configs["pv_asso"]:
             self.pv_asso_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights["pv_asso"])
 
+        # ==== 剪枝损失再平衡 / focal / 链级 recall (2026-09-13) ====
+        # 背景: combined_loss 里 t_nodes 权重仅 1、tt_edges 硬编码 33(v38 配置注释: "tt_edges 占 91%,
+        #       node/LCA 欠投入"), 而配置里的 node_prune_weight/lca_weight **从未被代码读取**(死键)。
+        #       oracle 实验: 只把被误删的真值径迹补回 -> All 39.56 -> 54.09(+14.5pp), 点 recall 是最大杠杆。
+        #       默认值 (1/1/33) 与旧行为逐位一致, 不改变既有 run。
+        self.node_loss_w = float(self.configs.get("node_prune_weight", 1.0))
+        self.lca_loss_w = float(self.configs.get("lca_weight", 1.0))
+        self.edge_loss_w = float(self.configs.get("edge_prune_weight", 33.0))
+        self.prune_focal_gamma = float(self.configs.get("prune_focal_gamma", 0.0))
+        self._pw_nodes = pos_weights["nodes"]
+        self._pw_edges = pos_weights["edges"]
+        # 链级 min-pooling recall 损失 (对准"整条链被剪掉"的失败模式)
+        self.chain_recall_w = float(self.configs.get("chain_recall_weight", 0.0))
+        self.chain_recall_edge_w = float(self.configs.get("chain_recall_edge_weight", 0.0))
+        self.chain_recall_thr = float(self.configs.get("chain_recall_thr", 0.5))
+        self.chain_recall_tau = float(self.configs.get("chain_recall_tau", 0.1))
+
         self.trn_log, self.val_log = init_logs(configs)
         self.tst_log = init_logs(configs, mode="test")
         # init event reconstruction class
@@ -264,23 +379,51 @@ class DFEILightningModule(L.LightningModule):
             checkpoint["lr_schedulers"] = [sch.state_dict()]
 
     def load_state_dict(self, state_dict, strict=True):
-        """兼容旧 checkpoint 续训: 旧模型无 chain_select/source_head 头
-        (model.chain_scorer / model.source_head)。
+        """兼容旧 checkpoint 续训 / 升维继承:
+        1) 新头缺参 (chain_scorer/source_head/pv_cluster_head/edge_mass_head/
+           node_struct_head/node_mom_head/_track_attn)
+        2) 维度升级: 同名层 shape 不匹配 (tracks 16→32 / tt 边 16→24 的 encoder/GN/
+           decoder 末层及下游头输入层) — 该层保持随机初始化, 其余按名严格加载。
 
         trainer.fit(ckpt_path=...) 与 load_from_checkpoint 最终都经 load_state_dict;
-        当新模块启用了新头而 checkpoint 缺少其参数时, 允许缺失 (随机初始化),
-        其余参数保持严格匹配。
+        放宽仅在存在上述两类时触发, 跳过的层会打印, 供冒烟人工核对。
         """
         if strict:
-            missing = [k for k in self.state_dict() if k not in state_dict
-                       and (k.startswith("model.chain_scorer") or k.startswith("model.source_head")
-                            or k.startswith("model.pv_cluster_head") or k.startswith("model.edge_mass_head")
-                            or k.startswith("model.node_struct_head") or k.startswith("model.node_mom_head")
-                            or k.startswith("model._track_attn"))]
-            if missing:
-                print(f"[heads] 旧 checkpoint 无新头参数 ({len(missing)} 个: "
-                      f"chain_scorer/source_head/pv_cluster_head/edge_mass_head/node_struct_head/node_mom_head/_track_attn), 新头随机初始化续训")
-                return super().load_state_dict(state_dict, strict=False)
+            heads = ("model.chain_scorer", "model.source_head", "model.pv_cluster_head",
+                     "model.edge_mass_head", "model.node_struct_head", "model.node_mom_head",
+                     "model._track_attn")
+            cur = self.state_dict()
+            # 方案A 上下文剪枝头挂在 GN block 内 (key 形如 model._blocks.N._context_head.*),
+            # 前缀不固定 -> 用子串匹配纳入"新头缺参"白名单。
+            miss = [k for k in cur if k not in state_dict
+                    and (k.startswith(heads) or "_context_head." in k)]
+            shape_mm = []
+            for k in cur:
+                if k not in state_dict:
+                    continue
+                try:
+                    same = tuple(state_dict[k].shape) == tuple(cur[k].shape)
+                except RuntimeError:          # uninit (Lazy) 参数, shape 不可读
+                    continue
+                if not same:
+                    shape_mm.append(k)
+            if miss or shape_mm:
+                print(f"[load-relax] 兼容加载: 缺新头 {len(miss)} 个, "
+                      f"shape 不匹配 {len(shape_mm)} 个 (保持随机初始化)")
+                for k in shape_mm:
+                    print(f"    skip(shape) {k}: ckpt {tuple(state_dict[k].shape)} "
+                          f"-> new {tuple(cur[k].shape)}")
+                compatible = {}
+                for k in cur:
+                    if k not in state_dict:
+                        continue
+                    try:
+                        same = tuple(state_dict[k].shape) == tuple(cur[k].shape)
+                    except RuntimeError:
+                        same = True    # cur 侧 uninit (Lazy 待 materialize): 由 ckpt 模板加载
+                    if same:
+                        compatible[k] = state_dict[k]
+                return super().load_state_dict(compatible, strict=False)
         return super().load_state_dict(state_dict, strict=strict)
 
     def forward(self, batch):
@@ -585,13 +728,24 @@ class DFEILightningModule(L.LightningModule):
             pv_filter = batch[('tracks', 'pvs')].filter == 1
 
         for i, block in enumerate(self.model._blocks):
+            use_focal = (mode == "train" and self.prune_focal_gamma > 0)
             if self.configs["node_prune"]:
-                loss["t_nodes"] += self.node_criterion(block.node_logits['tracks'], y_nodes)
+                if use_focal:
+                    loss["t_nodes"] += focal_bce_with_logits(block.node_logits['tracks'], y_nodes,
+                                                             pos_weight=self._pw_nodes,
+                                                             gamma=self.prune_focal_gamma)
+                else:
+                    loss["t_nodes"] += self.node_criterion(block.node_logits['tracks'], y_nodes)
                 if mode == "test" and self.configs["plt_nodes"]:
                     get_block_score(log, block.node_weights['tracks'].squeeze(), y_nodes, i, var="nodes")
 
             if self.configs["edge_prune"]:
-                loss["tt_edges"] += self.edge_criterion(block.edge_logits[('tracks', 'to', 'tracks')], y_edges)
+                if use_focal:
+                    loss["tt_edges"] += focal_bce_with_logits(block.edge_logits[('tracks', 'to', 'tracks')], y_edges,
+                                                              pos_weight=self._pw_edges,
+                                                              gamma=self.prune_focal_gamma)
+                else:
+                    loss["tt_edges"] += self.edge_criterion(block.edge_logits[('tracks', 'to', 'tracks')], y_edges)
                 if mode == "test" and self.configs["plt_edges"]:
                     get_block_score(log, block.edge_weights[('tracks', 'to', 'tracks')].squeeze(), y_edges, i,
                                     var="edges")
@@ -652,7 +806,25 @@ class DFEILightningModule(L.LightningModule):
                 loss["mom"] = mo_loss
                 log["mom_loss"].append(mo_loss.item())
 
-        combined_loss = loss["LCA"] + loss["t_nodes"] + 33*  loss["tt_edges"] + loss["pv_asso"]
+        # 权重可配 (默认 1/1/33 与旧行为完全一致); 见 __init__ 中"剪枝损失再平衡"注释
+        combined_loss = (self.lca_loss_w * loss["LCA"] + self.node_loss_w * loss["t_nodes"]
+                         + self.edge_loss_w * loss["tt_edges"] + loss["pv_asso"])
+        # ==== 链级 min-pooling recall 损失 (点/边) ====
+        # 对准"整条真值链被剪掉"的失败模式: 罚每条链里**最弱**的那个点/边。
+        if mode == "train" and (self.chain_recall_w > 0 or self.chain_recall_edge_w > 0):
+            _tt = batch[('tracks', 'to', 'tracks')]
+            _cr_node, _cr_edge = chain_recall_loss(
+                block.node_logits['tracks'], block.edge_logits[('tracks', 'to', 'tracks')],
+                _tt.y, _tt.edge_index, batch['tracks'].x.shape[0],
+                thr=self.chain_recall_thr, tau=self.chain_recall_tau)
+            if _cr_node is not None:
+                combined_loss = combined_loss + self.chain_recall_w * _cr_node
+                if "chain_recall_loss" in log:
+                    log["chain_recall_loss"].append(_cr_node.item())
+            if _cr_edge is not None:
+                combined_loss = combined_loss + self.chain_recall_edge_w * _cr_edge
+                if "chain_recall_edge_loss" in log:
+                    log["chain_recall_edge_loss"].append(_cr_edge.item())
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:

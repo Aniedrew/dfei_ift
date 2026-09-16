@@ -7,11 +7,12 @@ from wmpgnn.model.blocks.hetero_edge_block import HeteroEdgeBlock
 from wmpgnn.model.blocks.hetero_global_block import HeteroGlobalBlock
 from wmpgnn.model.blocks.hetero_node_block import HeteroNodeBlock
 from wmpgnn.model.mlp_class import create_mlp
+from wmpgnn.model.context_prune import ContextPruneHead
 from wmpgnn.util.pruners import *
 
 
 class HeteroGraphNetwork(pl.LightningModule):
-    def __init__(self, config, node_types, edge_types, FT_layer=False):
+    def __init__(self, config, node_types, edge_types, FT_layer=False, context_last=False):
         super().__init__()
         self.edge_types = edge_types
         self.node_types = node_types
@@ -95,6 +96,18 @@ class HeteroGraphNetwork(pl.LightningModule):
         self.node_indices = {}
         self.edge_node_pruning_indices = {}
 
+        # ==== 方案 A: 上下文感知剪枝头 (默认 off -> 零影响) ====
+        # 挂在最后一个 GN block (与 B2/推理剪枝作用位置一致, 由外层 forward 置 _context_active)。
+        self._context_head = None
+        self._context_active = False
+        cp_cfg = config.get("context_prune", {}) or {}
+        if context_last and str(cp_cfg.get("mode", "off")) not in ("off", "local", ""):
+            node_dim = node_configs["tracks"]["layers"][-1]
+            tt_key = ('tracks', 'to', 'tracks')
+            edge_dim = edge_configs[tt_key]["layers"][-1] if tt_key in edge_configs \
+                else self._mlp_forward["layers"][-1]
+            self._context_head = ContextPruneHead(node_dim, edge_dim, cp_cfg)
+
     def _b2_mask(self, w):
         """B2 可微软掩码: mask = σ((w - cut) / τ), 返回与 w 同形的连续掩码 [0,1]。"""
         tau = max(float(self._b2_tau), 1e-3)
@@ -139,6 +152,24 @@ class HeteroGraphNetwork(pl.LightningModule):
                 self.node_weights[node_type] = self._sigmoid(self.node_logits[node_type])
             else:
                 self.node_weights[node_type] = torch.ones((graph[node_type].x.shape[0], 1)).to(self.device)
+
+        # ==== 方案 A: 上下文感知剪枝头 (仅最后一个 block; 用邻域点/边分数精修裁决) ====
+        # γ 初始 0 -> 训练初期恒等; 精修后的 logits/weights 写回 block, 供 BCE 监督与推理剪枝使用。
+        if (self._context_head is not None and getattr(self, "_context_active", False)
+                and not (self.edge_prune or self.node_prune) and self._use_node_weights
+                and ("tracks" in self.node_logits)):
+            tt = ('tracks', 'to', 'tracks')
+            if tt in self.edge_logits:
+                s_node = self.node_logits["tracks"]
+                s_edge = self.edge_logits[tt]
+                s_node_new, s_edge_new = self._context_head(
+                    global_input["tracks"].x, s_node,
+                    node_input[tt].edge_index,
+                    node_input[tt].edges, s_edge)
+                self.node_logits["tracks"] = s_node_new
+                self.node_weights["tracks"] = self._sigmoid(s_node_new)
+                self.edge_logits[tt] = s_edge_new
+                self.edge_weights[tt] = self._sigmoid(s_edge_new)
 
         # ==== B2: 节点权重软掩码 (全局聚合前, 与边掩码同理, 模拟剪枝后的节点集) ====
         if self._b2 and self._b2_active and self.training:

@@ -60,6 +60,12 @@ def init_logs(configs, mode="train"):
         if loss_config.get("chain_lca_loss", False):
             log["chain_lca_loss"] = []
 
+        # 链级 min-pooling recall 损失日志 (2026-09-13)
+        if loss_config.get("chain_recall_weight", 0.0):
+            log["chain_recall_loss"] = []
+        if loss_config.get("chain_recall_edge_weight", 0.0):
+            log["chain_recall_edge_loss"] = []
+
         # 方案7b: 可训练 PV 分簇头 (pv_cluster_head) loss 日志
         if loss_config.get("pv_cluster", False):
             log["pv_cluster_loss"] = []

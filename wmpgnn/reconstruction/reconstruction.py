@@ -11,6 +11,41 @@ from wmpgnn.reconstruction.reco_helper import *
 from wmpgnn.reconstruction.quantity_adder import *
 
 
+def _oracle_rewrite(selbool, tp, mode, frac=1.0):
+    """[诊断] 用真值均匀改写剪枝选择, 量化"剪枝质量"对下游重建的价值。
+
+    mode:
+      add_tp   补回真阳性 (把被误删的真值信号按比例加回)
+      remove_fp 删除假阳性 (把留存下来的背景按比例删掉)
+      both     完美剪枝 (= 真值本身)
+      drop_tp  反向对照: 按比例删掉真阳性 (应当变差, 用于验证实验有效性)
+      add_fp   反向对照: 按比例加入假阳性 (应当变差)
+    frac: 干预比例 [0,1], 在候选中**均匀随机**抽取 (固定种子, 可复现)。
+    """
+    tp = tp.to(selbool.device).bool()
+    if mode == "both":
+        return tp.clone()
+    if mode == "add_tp":
+        cand, add = (~selbool) & tp, True
+    elif mode == "remove_fp":
+        cand, add = selbool & (~tp), False
+    elif mode == "drop_tp":
+        cand, add = selbool & tp, False
+    elif mode == "add_fp":
+        cand, add = (~selbool) & (~tp), True
+    else:
+        raise ValueError(f"未知 oracle 模式: {mode}")
+    out = selbool.clone()
+    n = int(cand.sum().item())
+    k = int(round(n * float(frac)))
+    if n > 0 and k > 0:
+        score = torch.rand(cand.shape[0], device=selbool.device)
+        score[~cand] = 2.0                       # 非候选排到最后
+        idx = torch.argsort(score)[:k]           # 均匀随机抽取 k 个候选
+        out[idx] = add
+    return out
+
+
 class EventReconstruction:
     def __init__(self, configs):
         # boolean whether to use true reconstruction or predicted reconstruction
@@ -192,8 +227,33 @@ class EventReconstruction:
                     )
             elif self.configs.get("node_prune", True):
                 node_selbool = node_weights[track_mask] > self.configs["node_prune_thr"]
+                # ==== [诊断] Oracle 干预: 用真值改写剪枝输入 ====
+                # 点干预必须在 true_node_pruning(原地删点) **之前**; 否则加回的点在图里已不存在。
+                _o_n = self.configs.get("oracle_node", "none")
+                _o_e = self.configs.get("oracle_edge", "none")
+                if not hasattr(self, "_oracle_stat"):
+                    self._oracle_stat = dict(n_kept=0, n_sig=0, n_kept_sig=0,
+                                             e_kept=0, e_sig=0, e_kept_sig=0)
+                _tp_n = (graphs[i]['tracks'].ft != 1) if (_o_n not in ("none", None) or _o_e not in ("none", None)) else None
+                if _o_n not in ("none", None):
+                    if _tp_n is not None:
+                        st = self._oracle_stat
+                        st["n_kept"] += int(node_selbool.sum().item())
+                        st["n_sig"] += int(_tp_n.sum().item())
+                        st["n_kept_sig"] += int((node_selbool & _tp_n).sum().item())
+                    node_selbool = _oracle_rewrite(node_selbool, _tp_n, _o_n,
+                                                   float(self.configs.get("oracle_node_frac", 1.0)))
                 edge_mask = true_node_pruning(node_selbool, graphs[i], "tracks", [('tracks', 'to', 'tracks')])
                 edge_selbool = edge_weights[tr_tr_mask][edge_mask] > self.configs["edge_prune_thr"]
+                # 边干预在删点之后 (边已重排, 与 edge_selbool 对齐)、edge_pruning 之前
+                if _o_e not in ("none", None):
+                    _tp_e = (graphs[i][('tracks', 'to', 'tracks')].y > 0)
+                    st = self._oracle_stat
+                    st["e_kept"] += int(edge_selbool.sum().item())
+                    st["e_sig"] += int(_tp_e.sum().item())
+                    st["e_kept_sig"] += int((edge_selbool & _tp_e).sum().item())
+                    edge_selbool = _oracle_rewrite(edge_selbool, _tp_e, _o_e,
+                                                   float(self.configs.get("oracle_edge_frac", 1.0)))
             else:
                 edge_selbool = edge_weights[tr_tr_mask] > self.configs["edge_prune_thr"]
 
@@ -264,6 +324,18 @@ class EventReconstruction:
                 precomputed_ft_desc.append(evt_ft_des.cpu())
             else:
                 precomputed_ft_desc.append(None)
+
+        # [诊断] 剪枝质量汇总 (仅 oracle 开启时打印): 直接量出剪枝的 precision/recall
+        if getattr(self, "_oracle_stat", None):
+            s = self._oracle_stat
+            if s["n_sig"] > 0:
+                print(f"[oracle-剪枝质量] 点: 保留={s['n_kept']} 真值信号={s['n_sig']} 保留∩信号={s['n_kept_sig']} "
+                      f"precision={s['n_kept_sig'] / max(s['n_kept'], 1):.4f} "
+                      f"recall={s['n_kept_sig'] / max(s['n_sig'], 1):.4f}")
+            if s["e_sig"] > 0:
+                print(f"[oracle-剪枝质量] 边: 保留={s['e_kept']} 真值链边={s['e_sig']} 保留∩链边={s['e_kept_sig']} "
+                      f"precision={s['e_kept_sig'] / max(s['e_kept'], 1):.4f} "
+                      f"recall={s['e_kept_sig'] / max(s['e_sig'], 1):.4f}")
 
         # now multiprocess the reco
         args_list = [(graph.cpu(), pv_desc, ft_desc) for graph, pv_desc, ft_desc in
