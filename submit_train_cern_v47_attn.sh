@@ -1,10 +1,11 @@
 #!/bin/bash
 #
-# DFEI v38 + track 级自注意力 (试验, 单发): 从 v38 best 加载, 20ep 微调 + thr0.9 评估
+# DFEI v47 (masshead2, 最强 32.7/55.9) + track 级自注意力完整版 (edge-bias)
+# 20ep 微调探针, 对照 v47
 #
 # 提交方式:
-#   hep_sub submit_train_cern_v38_attn.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
-#       -o logs/v38_attn.out -e logs/v38_attn.err
+#   hep_sub submit_train_cern_v47_attn.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
+#       -o logs/v47_attn.out -e logs/v47_attn.err
 #
 
 source ~/.bashrc
@@ -17,7 +18,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn
 
-CFG=config_files/train_CERN_v38_attn.yaml
+CFG=config_files/train_CERN_v47_attn.yaml
 
 echo "========================================"
 echo "JOB ID      : $_CONDOR_IHEP_JOB_ID"
@@ -27,7 +28,7 @@ echo "GPU         : $CUDA_VISIBLE_DEVICES"
 echo "CONFIG      : $CFG"
 echo "========================================"
 
-# === GPU 预检 (失败自动重排) ===
+# === GPU 预检: 坏卡直接退出 (单发 job, 无自重提交) ===
 echo "[PREFLIGHT] GPU check at $(date), device=$CUDA_VISIBLE_DEVICES"
 nvidia-smi -L 2>&1 | head -3
 python3 -u -c "
@@ -43,19 +44,8 @@ print('[PREFLIGHT] matmul OK, sum=%.3f' % b)
 "
 PREFLIGHT_RC=$?
 if [ $PREFLIGHT_RC -ne 0 ]; then
-  echo "[PREFLIGHT] FAIL (rc=$PREFLIGHT_RC): 分配的GPU不可用"
-  RETRY_COUNT_FILE=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/v38_attn.retry_count
-  M=0
-  [ -f "$RETRY_COUNT_FILE" ] && M=$(cat "$RETRY_COUNT_FILE")
-  M=$((M+1)); echo "$M" > "$RETRY_COUNT_FILE"
-  echo "[RETRY] 第 $M 次, sleep 120s 后重排..."
-  sleep 120
-  # 教训(ab02/v38_attn_full): 不要 unset 环境再自重提交——会误删 hep_sub 组解析
-  # 变量, 报 "No resource serving for group 'ghigh'"。直接重提即可。
-  hep_sub submit_train_cern_v38_attn.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
-      -o logs/v38_attn.out -e logs/v38_attn.err
-  echo "[RETRY] 已重提, 本次退出"
-  exit 0
+  echo "[PREFLIGHT] FAIL (rc=$PREFLIGHT_RC): 分配的GPU不可用, 退出 (稍后人工/定时重提)"
+  exit 77
 fi
 
 python3 -u wmpgnn/analysis/trainer.py --config "$CFG"
@@ -68,16 +58,16 @@ echo "========================================"
 JOB_ID="${_CONDOR_IHEP_JOB_ID:-unknown}"
 STATUS="✅ 完成"; [ $EXIT_CODE -ne 0 ] && STATUS="❌ 失败"
 curl -s --connect-timeout 10 -X POST https://sctapi.ftqq.com/SCT387631TDiuLj6UNUsFTaDRjkaSWcdPv.send \
-  -d "title=[DFEI] ${STATUS} v38+attention Job ${JOB_ID}" \
-  -d "desp=## v38+attention 试验 ${STATUS}
+  -d "title=[DFEI] ${STATUS} v47+attn Job ${JOB_ID}" \
+  -d "desp=## v47 + attention(edge-bias) ${STATUS}
 | 作业ID | ${JOB_ID} |
 | 状态 | ${STATUS} |
-| 配置 | train_CERN_v38_attn.yaml |
+| 配置 | train_CERN_v47_attn.yaml |
 | 结束时间 | $(date) |
 | 退出码 | ${EXIT_CODE} |
 
 \`\`\`bash
-tail -40 /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/v38_attn.out
+tail -40 /lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/v47_attn.out
 \`\`\`" > /dev/null 2>&1
 
 exit $EXIT_CODE

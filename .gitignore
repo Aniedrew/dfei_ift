@@ -5,3 +5,5 @@ pythia_logs/
 .ipynb_checkpoints/
 # 训练作业日志 (.out/.err, 体积大且价值低, 不入库)
 logs/
+# 组会报告产物 (PNG/PPTX/版本归档, 数百 MB; 生成脚本 make_*.py 仍入库)
+meeting_figs_*/

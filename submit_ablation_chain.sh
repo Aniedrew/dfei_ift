@@ -9,6 +9,11 @@
 #     -> 接受, 更新基线 (下一步从这里继续); 否则 -> 回退 (下一步仍从旧基线出发,
 #     本步结果保留作为"该优化无效"的证据)
 #
+# 驱动方式 (2026-09-07 起): 本脚本只执行"一步", 不自重提交!
+#   GPU 作业内 hep_sub 自重提交不可靠 (env 64KB 限制 vs hep_sub 组解析变量矛盾,
+#   且调度器会静默丢弃作业内重提) —— 由 CPU watchdog (ablation_watchdog.sh) 检测
+#   一步完成后从外部提交下一步。
+#
 # 提交方式:
 #   hep_sub submit_ablation_chain.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
 #       -o logs/ablation_chain.out -e logs/ablation_chain.err
@@ -84,13 +89,14 @@ print('[PREFLIGHT] matmul OK, sum=%.3f' % b)
 "
 PREFLIGHT_RC=$?
 if [ $PREFLIGHT_RC -ne 0 ]; then
-  echo "[PREFLIGHT] FAIL (rc=$PREFLIGHT_RC): 分配的GPU不可用"
+  echo "[PREFLIGHT] FAIL (rc=$PREFLIGHT_RC): 分配的GPU不可用, 自动重排"
   RETRY_COUNT_FILE=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/ablation_chain.retry_count
   M=0
   [ -f "$RETRY_COUNT_FILE" ] && M=$(cat "$RETRY_COUNT_FILE")
   M=$((M+1)); echo "$M" > "$RETRY_COUNT_FILE"
-  echo "[RETRY] 第 $M 次, sleep 60s 后重排..."
+  echo "[RETRY] 累计第 $M 次, sleep 60s 后自重提交 (env 小则无 64KB 问题)"
   sleep 60
+  # 作业内自重提交: 要求提交者 env 较小; watchdog 已弃用 (CPU 作业不被调度)
   hep_sub submit_ablation_chain.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
       -o logs/ablation_chain.out -e logs/ablation_chain.err
   echo "[RETRY] 已重提, 本次退出"
@@ -137,14 +143,12 @@ else
   MSG="⏸ REJECT $NAME: All ${BASE_ALL}->${STEP_ALL} (Perfect ${BASE_PERF}->${STEP_PERF}) — 已回退, 保留作无效证据"
 fi
 
-# === 推进到下一步并链式重提交 ===
+# === 推进到下一步 (由 watchdog 提交) ===
 STEP=$((STEP+1))
 echo "$STEP" > "$STEP_FILE"
 read BASE_VER BASE_ALL BASE_PERF < "$BASE_FILE"
 if [ "$STEP" -lt "$N_STEPS" ]; then
-  echo "[CHAIN] 下一步: ${CONFIGS[$STEP]} (从 version_${BASE_VER} 出发, $STEP/$N_STEPS), 重提交"
-  hep_sub submit_ablation_chain.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
-      -o logs/ablation_chain.out -e logs/ablation_chain.err
+  echo "[DONE-STEP] 本步 ($NAME) 完成, 下一步 ${CONFIGS[$STEP]} (step=$STEP/$N_STEPS, 从 version_${BASE_VER}) 由 watchdog 提交"
 else
   echo "[DONE] 消融链全部 $N_STEPS 步完成, 最终基线 version_${BASE_VER}"
   MSG="$MSG | 🏁 全部完成, 最终模型 version_${BASE_VER}"

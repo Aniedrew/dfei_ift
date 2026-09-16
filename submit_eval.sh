@@ -50,6 +50,8 @@ retry_or_exit() {
     [ -n "$NODE" ] && ARGU_ARGS+=(${NODE})
     WN_ARGS=()
     [ -n "$NODE" ] && WN_ARGS=(-wn $NODE)
+    # 清掉父作业继承的 GPU 绑定, 否则重提会被"钉"回同一张坏卡 (死循环)
+    unset CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES
     hep_sub submit_eval.sh "${ARGU_ARGS[@]}" -g ghigh -gpu 1 -cpu 4 -m 32000 -wt mid -o logs/eval_${CONFIG_FILE%.yaml}.out -e logs/eval_${CONFIG_FILE%.yaml}.err "${WN_ARGS[@]}"
     echo "[RETRY] 已重提, 本次退出"
     exit 0

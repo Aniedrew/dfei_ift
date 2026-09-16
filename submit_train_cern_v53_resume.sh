@@ -94,9 +94,8 @@ if [ $PREFLIGHT_RC -ne 0 ]; then
     echo "$M" > "$RETRY_COUNT_FILE"
     echo "[RETRY] 第 $M/$MAX_RETRY 次, sleep ${RETRY_SLEEP}s 后重排..."
     sleep $RETRY_SLEEP
-    for v in $(env | cut -d= -f1); do
-      echo " HOME PATH USER LOGNAME HOSTNAME SHELL PWD OMP_NUM_THREADS PYTORCH_CUDA_ALLOC_CONF CUDA_VISIBLE_DEVICES PYTHONPATH _CONDOR_IHEP_JOB_ID " | grep -q " $v " || unset "$v" 2>/dev/null
-    done
+    # 教训(ab02/v38_attn_full): 不要 unset 环境再自重提交——会误删 hep_sub 组解析
+    # 变量, 报 "No resource serving for group 'ghigh'"。直接重提即可。
     hep_sub submit_train_cern_v53_resume.sh -g ghigh -gpu 1 -cpu 4 -m 64000 -wt long \
         -o logs/v53_resume.out -e logs/v53_resume.err
     echo "[RETRY] 已重提, 本次退出"
