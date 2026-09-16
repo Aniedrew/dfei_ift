@@ -1,0 +1,148 @@
+digraph overview {
+  rankdir=TB; bgcolor="white"; compound=true; splines=true;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, margin="0.10,0.06", penwidth=1.0, color="#9aa0a6"];
+  edge [color="#9aa0a6", arrowsize=0.55, penwidth=0.9, fontname="Helvetica", fontsize=9, fontcolor="#5f6368"];
+  labelloc="t";
+  label=<<b>DFEI 版本家族谱 · 总览</b><br/><font point-size="11" color="#5f6368">边 = 起点关系(parent → child)　|　红色虚线边 = 失败 / 无效分支　|　数字 = PerfectReco / AllParticles（<b>修正口径</b>：CERN 固定分母 N_total=17561, thr0.9）　|　* = 公开数据线（自有分母 N=12774，跨数据集不可直接比）<br/>2026-09-13 新增：<b>oracle 上限实验（证明瓶颈=剪枝分类）</b>、联合实验 v549、固化 lr 探针 v550/v551；v519/v521 两个长训已停</font>>;
+  fontsize=22; fontcolor="#202124";
+
+  // 色板: 早期#EDEDED 主线#DCEBFF 最优#FFD84D 失败#FADCDC attention#FFD9E1
+  //       公开#D7F2DC 消融#E9DDFF 累加#EDF6B8 对照#FFF2C4 结构#ECECEC
+
+  subgraph cluster_early { label="早期 / 起点"; style="rounded,dashed"; color="#bdbdbd"; fontsize=12; fontcolor="#616161";
+    v23 [label="v23\npublic paper 复现", fillcolor="#EDEDED"];
+    v25 [label="v25\nCERN 首次", fillcolor="#EDEDED"];
+    v30 [label="v30\nCERN(bug未修)", fillcolor="#EDEDED"];
+    v31 [label="v31 ★基线(修 class-weight bug)\n12.30 / 22.49", fillcolor="#DCEBFF", penwidth=2.2];
+    v27 [label="v27 公开【简单栈】\n22.76 / 51.66 *", fillcolor="#D7F2DC"];
+  }
+
+  subgraph cluster_main { label="CERN 主线 (逐层累加)"; style="rounded"; color="#4477aa"; penwidth=1.6; fontsize=12; fontcolor="#2a4d75";
+    v32 [label="v32 微调", fillcolor="#DCEBFF"];
+    v34 [label="v34 微调✗", fillcolor="#FADCDC"];
+    v35 [label="v35 微调", fillcolor="#DCEBFF"];
+    v36 [label="v36 +【B2 cut0.5】+【源检测头】\n18.77 / 35.17", fillcolor="#DCEBFF"];
+    v37 [label="v37 +【class2加权3.0】+【链 hinge】\n19.50 / 36.21", fillcolor="#DCEBFF"];
+    v38 [label="v38 +【class2→2.0】【cut→0.85】+【链类别CE】\n21.10 / 37.59", fillcolor="#BBD9FF", penwidth=1.8];
+    v46 [label="v46 +【质量头 v1】\n21.28 / 38.22", fillcolor="#EAF3FF"];
+    v47 [label="v47 ★★ 当前最优\nv38 + 【ππ质量头 masshead2】\n23.15 / 39.56", fillcolor="#FFD84D", color="#E0A800", penwidth=3];
+    v48 [label="v48 三头同加✗\n21.40 / 37.36", fillcolor="#FADCDC"];
+  }
+
+  subgraph cluster_attn { label="attention 线"; style="rounded"; color="#cc5577"; penwidth=1.4; fontsize=11; fontcolor="#8a2b45";
+    v510 [label="v510 纯内容自注意力\n21.75 / 38.01", fillcolor="#FFD9E1"];
+    v511 [label="v511 ★+边特征 bias\n22.11 / 38.39", fillcolor="#FFC2D1", penwidth=1.8];
+    v515 [label="v515 v47+attn ✗\n22.95 / 39.04", fillcolor="#FADCDC"];
+    v516 [label="v516 v515续 ✗\n22.72 / 38.95", fillcolor="#FADCDC"];
+    v517 [label="v517 v38+attn+质量(世代)\n22.00 / 38.12", fillcolor="#FFD9E1"];
+    v519 [label="v519 续150ep (已停)\nbest val 35.96 > v47 35.68", fillcolor="#FFD9E1"];
+  }
+
+  subgraph cluster_gen { label="v47 + 监督头 (固化态)"; style="rounded,dashed"; color="#cc9900"; fontsize=10; fontcolor="#7a5c00";
+    v50 [label="v50 仅质量*", fillcolor="#FFF2C4"];
+    v51 [label="v51 +动量*", fillcolor="#FFF2C4"];
+    v52 [label="v52 +结构*", fillcolor="#FFF2C4"];
+    v518 [label="v518 v47+结构头\n22.52 / 38.73", fillcolor="#FFF2C4"];
+    v520 [label="v520 续179ep ✗\n22.69 / 38.87", fillcolor="#FADCDC"];
+  }
+
+  subgraph cluster_struct { label="结构扩展 (多失败)"; style="rounded,dashed"; color="#bdbdbd"; fontsize=10; fontcolor="#616161";
+    v53 [label="v53 升维32/24(从头)✗\n15.84 / 26.78", fillcolor="#ECECEC"];
+    v512 [label="v512 升维32/24✗\n13.34 / 24.03", fillcolor="#FADCDC"];
+    v513 [label="v513 GN宽256(OOM)", fillcolor="#F5F0F0"];
+    v514 [label="v514 wide b6 ✗\n15.35 / 25.44", fillcolor="#FADCDC"];
+  }
+
+  subgraph cluster_pv { label="PV 分簇 (已弃)"; style="rounded,dashed"; color="#bdbdbd"; fontsize=10; fontcolor="#616161";
+    v39 [label="v39", fillcolor="#ECECEC"];
+    v40 [label="v40✗", fillcolor="#ECECEC"];
+    v41 [label="v41✗", fillcolor="#ECECEC"];
+    v42 [label="v42✗", fillcolor="#ECECEC"];
+  }
+
+  subgraph cluster_public { label="公开数据线"; style="rounded"; color="#2e8b57"; fontsize=10; fontcolor="#1b5e34";
+    v45 [label="v45 公开v38全栈\n8.06 / 19.70 *", fillcolor="#D7F2DC"];
+    v49 [label="v49 续训✗\n5.95 / 14.15 *", fillcolor="#FADCDC"];
+    v60 [label="v60 P1: v27+B2+源", fillcolor="#E4F6E8"];
+    v533 [label="v533 公开组合", fillcolor="#E4F6E8"];
+  }
+
+  subgraph cluster_abl { label="贪心消融链 (修正口径重排)"; style="rounded"; color="#7a44aa"; fontsize=10; fontcolor="#4a2b73";
+    v500 [label="v500 ab01【rebal】✓ 起点\n17.90 / 33.34", fillcolor="#E9DDFF", penwidth=1.8];
+    v501 [label="ab02 B2 ✗\n17.72 / 32.70", fillcolor="#F3ECFF"];
+    v502 [label="ab03 cl2w ~\n18.01 / 33.27", fillcolor="#F3ECFF"];
+    v503 [label="ab04 hinge ✗\n17.74 / 32.78", fillcolor="#F3ECFF"];
+    v504 [label="ab05 链CE ✓ ACCEPT\n19.13 / 33.69", fillcolor="#DCC9FF", penwidth=1.8];
+    v505 [label="ab06 源 ~\n19.13 / 33.58", fillcolor="#F3ECFF"];
+    v506 [label="ab07 质量 ~\n19.23 / 33.20", fillcolor="#F3ECFF"];
+    v507 [label="ab08 结构 ✓ 链内最好\n19.62 / 34.02", fillcolor="#DCC9FF", penwidth=1.8];
+    v508 [label="ab09 动量 (跑中)", fillcolor="#F3ECFF"];
+    v509 [label="ab00 空对照 ~ 零漂移\n17.98 / 33.27", fillcolor="#FFF2C4"];
+    v521 [label="v521 组合验证 (已停)", fillcolor="#FFF2C4"];
+  }
+
+  subgraph cluster_new { label="2026-09-13 新实验 (固定分母判据)"; style="rounded"; color="#0b7285"; penwidth=1.5; fontsize=10; fontcolor="#0b4f5c";
+    v549 [label="v549 联合: v507 + 质量 + 动量\n· 19.47 / 33.92 → 无增益", fillcolor="#CDEEF3"];
+    v550 [label="v550 固化探针 lr1e-4\n· 重提中", fillcolor="#CDEEF3"];
+    v551 [label="v551 固化探针 lr3e-4 ★★★\n· 23.19 / 39.92 → 追平/略超 v47!\n· ⇒ 固化假说证伪: 是 lr 太小", fillcolor="#A8E6A1", color="#2e8b57", penwidth=2.4];
+    v55x [label="剪枝 4 arm (cpt38, lr3e-5)\n· v552 点w5 / v553 边w3 ✅22.84\n· v554 w5+focal / v555 链级recall", fillcolor="#CDEEF3"];
+    v56x [label="下一批 6 arm (基底 v551@lr3e-4 / v500@lr3e-4)\n· v556 叠杠杆冲40%+/v557 点w5/v558 focal\n· v559 高lr对照/v560 v500高lr对照/v561 +B2", fillcolor="#CDEEF3"];
+    vORC [label="Oracle 全 6 档 (v47 推理, 固定分母)\n· 基线 39.56 / 23.15\n· 点recall修→54.09  点prec修→54.68\n· 点全修→71.99  边修→71.10\n· 点+边修→99.75  ⇒ 点头两边都弱", fillcolor="#CDEEF3", penwidth=1.8];
+  }
+
+  subgraph cluster_accum { label="累加保留链 / 突破"; style="rounded"; color="#aa8800"; fontsize=10; fontcolor="#7a5c00";
+    v530 [label="v530 A1(=v36) 无收益\n17.71 / 32.58", fillcolor="#EDF6B8"];
+    v531 [label="v531 A2(=v37) 未建未跑", fillcolor="#F5F0F0"];
+    v532 [label="v532 突破: v511+质量头 (跑中)\nbest val 35.95 > v47 35.68", fillcolor="#FFE08A"];
+  }
+
+  // ===== 优化 / 改动 参考表 (图旁) =====
+  optdef [shape=plaintext, fontsize=11, label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" BGCOLOR="white" COLOR="#9aa0a6">
+  <TR><TD COLSPAN="3" BGCOLOR="#4477aa"><FONT COLOR="white"><B>优化 / 改动  参考表</B></FONT></TD></TR>
+  <TR><TD BGCOLOR="#eef3fb"><B>名称</B></TD><TD BGCOLOR="#eef3fb"><B>具体内容</B></TD><TD BGCOLOR="#eef3fb"><B>类别</B></TD></TR>
+  <TR><TD>rebal</TD><TD>损失再平衡 (隔离 v36 配方非 PPT 项)</TD><TD>基线</TD></TR>
+  <TR><TD>B2 可微剪枝</TD><TD>w_eff = w·σ((w−cut)/τ), τ 1.0→0.1 退火；模拟推理硬剪枝</TD><TD>机制</TD></TR>
+  <TR><TD>b2_cut</TD><TD>B2 剪枝阈值 (0.5→0.7→0.85，逐步对齐推理 thr0.9)</TD><TD>机制</TD></TR>
+  <TR><TD>class2 加权</TD><TD>LCA class2 (同母亲姐妹边) 损失加权 (3.0→2.0)</TD><TD>loss 权重</TD></TR>
+  <TR><TD>chain_lca_loss (hinge)</TD><TD>链内边高置信 hinge：conf&lt;margin(0.3) 则罚 (方案5)</TD><TD>loss</TD></TR>
+  <TR><TD>chain_lca_ce</TD><TD>链内边“类别正确”交叉熵 (含 hinge, 方案6) —— 真正有效的链一致性项</TD><TD>loss</TD></TR>
+  <TR><TD>source head</TD><TD>源检测头 (第6头)：监督 GNN 找链根 (Rumor Centrality)</TD><TD>监督头</TD></TR>
+  <TR><TD>mass head</TD><TD>边级 ππ 不变质量回归 (masshead2: log10 归一 + 掩码修复)</TD><TD>监督头 (第7)</TD></TR>
+  <TR><TD>struct head</TD><TD>节点 depth + RC 双重回归</TD><TD>监督头 (第8)</TD></TR>
+  <TR><TD>mom head</TD><TD>节点动量回归</TD><TD>监督头 (第9)</TD></TR>
+  <TR><TD>attention</TD><TD>track 级多头自注意力；edge-bias 版用 tt 边特征作注意力 bias (ParT 式)</TD><TD>结构</TD></TR>
+  <TR><TD>asym 32/24</TD><TD>tracks 节点升 32 维 / tt 边升 24 维 (其余 16)</TD><TD>结构</TD></TR>
+  <TR><TD>wide GN256</TD><TD>GNblock 隐层宽度 128→256</TD><TD>结构</TD></TR>
+</TABLE>>];
+
+  // edges
+  v23 -> v27 [label="cpt23"];
+  v31 -> v32 [label="v31ep56续"]; v32 -> v34; v32 -> v35 [label="best68"];
+  v35 -> v36 [label="best79"];
+  v36 -> v37 [label="best90 +0.73"];
+  v37 -> v38 [label="best101 +1.60"];
+  v38 -> v46 [label="best106 +0.18"];
+  v38 -> v47 [label="best113 +2.05 ★"];
+  v38 -> v48;
+  v38 -> v39; v38 -> v40; v38 -> v41; v38 -> v42;
+  v38 -> v512; v38 -> v513; v513 -> v514; v38 -> v510; v38 -> v511 [label="+1.01/+0.80"];
+  v38 -> v517 [label="cpt38 150ep"];
+  v47 -> v50; v47 -> v51; v47 -> v52; v47 -> v515 [label="20ep"]; v47 -> v518 [label="ep113续"];
+  v515 -> v516 [label="续60ep"]; v517 -> v519 [label="续150ep"]; v518 -> v520 [label="续179ep"];
+  v45 -> v49 [label="ep66续"];
+  v27 -> v60; v27 -> v533;
+  v31 -> v500 [label="从头"];
+  v500 -> v501; v500 -> v502; v500 -> v503; v500 -> v504 [label="✓ +1.23"];
+  v500 -> v509; v500 -> v521; v500 -> v530;
+  v504 -> v505; v504 -> v506; v504 -> v507; v504 -> v508;
+  v507 -> v549 [label="20ep 联合"]; v507 -> v550 [label="20ep"]; v507 -> v551 [label="20ep ★lr3e-4"];
+  v38 -> v55x [label="20ep 剪枝权重/focal/链recall", color="#0b7285"];
+  v551 -> v56x [label="4 arm @lr3e-4", color="#0b7285"]; v500 -> v56x [label="2 arm @lr3e-4", color="#0b7285"];
+  v530 -> v531; v511 -> v532;
+  v47 -> vORC [label="推理干预(仅评估)", style=dotted, color="#0b7285"];
+
+  edge [style=dashed, color="#d9534f", penwidth=1.0];
+  v47 -> v515; v47 -> v518; v38 -> v512; v38 -> v513;
+  v500 -> v501; v500 -> v502; v500 -> v503; v504 -> v505; v504 -> v506; v45 -> v49;
+}

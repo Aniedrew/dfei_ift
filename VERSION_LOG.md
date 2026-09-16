@@ -2,7 +2,345 @@
 
 > 用途：快速区分每个 version_XX 是干什么的、有什么改动、结果如何。
 > 数据口径：除注明外，均为 CERN 官方 MC（DFEI_IFT_20260702），thr0.9 同口径评估，20 测试文件。
-> 更新：2026-09-03（v53 链式续训中 / 消融链 ab01 训练中 / v38+attention 试验已提交）
+> 更新：2026-09-16（详见上方「## 最新进展（2026-09-15）」的 N–Q 节）
+> 版本家族谱（矢量多页 PDF，共 5 页）：`docs/version_lineage.pdf` —— 第1页总谱，第2–5页为重要支系分图（CERN 主线 / 突破尝试 / 方法对照 / 公开+已弃）。源文件 `docs/fig_overview.dot` 等，一键重建 `bash docs/build_lineage.sh`
+
+---
+
+## 最新状态（2026-09-15 更新）
+
+**CERN 最优**：**v557**（点剪枝权重 1→5，@lr 3e-4，从 v551 续训）= 修正口径 **Perfect 24.34 / All 42.01**（thr0.9，N_total=17561）—— 首次明确超过 v47（23.15 / 39.56）。⚠️ 旧记法 "55.9 / 32.7" 是**可变分母**口径，已废弃——详见下方「评估口径修正」。
+
+**公开数据最优**：**v61**（复现链 P2 = CERN v37 配方）= **26.41 / 59.14**（N_total_public=12774）。
+
+## 最新进展（2026-09-15）—— 收官批判读：v557 首次超 v47
+
+> 09-13/14 提交的批次在 09-14/15 陆续跑完（训练脚本末尾自带 thr0.9 评估），此前只缺固定分母判读。
+> 重算命令：`python3 wmpgnn/analysis/recompute_fixed_denominator.py 17561`（已刷新 `logs/fixed_denominator_metrics_inclusive_00342442.csv`）。
+
+### N. 结果（thr0.9，固定分母 17561；run-to-run 噪声 ±75 Perf# ≈ ±0.43pp）
+
+| ver | 改动 | 基底 / lr | N（存活链）| All# | Perf# | All_fix% | Perf_fix% |
+|---|---|---|---|---|---|---|---|
+| **v557** | **点权重 1→5** | cpt=551, 3e-4 | 12903 | 7378 | 4275 | **42.01** | **24.34** |
+| v559 | 对照：无改动（v551 再续 20ep）| cpt=551, 3e-4 | 12366 | 7031 | 4182 | 40.04 | 23.81 |
+| v550 | **lr 1e-4 探针** | cpt=507 | 12571 | 7014 | 4091 | 39.94 | 23.30 |
+| v551 | lr 3e-4 探针 | cpt=507 | 12472 | 7010 | 4072 | 39.92 | 23.19 |
+| v556 | 点5+边3+链recall | cpt=551, 3e-4 | 13490 | 6892 | 4085 | 39.25 | 23.26 |
+| v553 | 边权重 33→3 | cpt=38, 3e-5 | 12761 | 6667 | 4011 | 37.96 | 22.84 |
+| v560 | **v500 高lr 对照（无改动）** | cpt=500, 3e-4 | 12446 | 6640 | 3557 | 37.81 | 20.26 |
+| v552 | 点权重 1→5 | cpt=38, 3e-5 | 12776 | 6542 | 3644 | 37.25 | 20.75 |
+| v561 | v500 + B2(cut0.85) | cpt=500, 3e-4 | 12548 | 6465 | 3486 | 36.81 | 19.85 |
+| v555 | 链级 recall | cpt=38, 3e-5 | 13103 | 6180 | 3465 | 35.19 | 19.73 |
+| v549 | v507+mass+mom | cpt=507, 3e-5 | 12583 | 5956 | 3419 | 33.92 | 19.47 |
+| **v554** | **点w5 + focal γ2** | cpt=38, 3e-5 | 4715 | 4213 | 2569 | **23.99** | **14.63** |
+| **v558** | **focal γ2** | cpt=551, 3e-4 | 2852 | 2474 | 1505 | **14.09** | **8.57** |
+| *v47* | *旧 SOTA* | — | 12436 | 6947 | 4066 | *39.56* | *23.15* |
+| *v38* | *—* | — | 12663 | 6601 | 3705 | *37.59* | *21.10* |
+| *v507* | *ab 链最好* | — | 12542 | 5975 | 3445 | *34.02* | *19.62* |
+| *v500* | *ab 基线* | — | 12304 | 5854 | 3144 | *33.34* | *17.90* |
+
+### O. 判读
+
+1. **v557 = 新 SOTA**（+2.45pp All / +1.19pp Perf over v47）。机制：`node_prune_weight=5` 把存活链从 12366 提到 **12903（+537 ≈ +3pp 存活率）**，而条件重建率几乎不动（原始分母 56.86% → 57.18%）→ **正是 oracle 判定的「点 recall 瓶颈」被正面攻到**，且没有靠牺牲精度换。
+2. ⚠️ **Perf 增益在噪声边缘**：v557 vs 同基底对照 v559 只差 **93 个 Perfect**（±75）；All 的 +347 是稳的 → 复现 run **v563** 在跑。
+3. ⚠️ **修正（2026-09-16）：B2 的 REJECT 成立，不是 lr 假象。** v560（v500 + 20ep @3e-4，**零改动**）= 37.81/20.26 才是正确对照；v561（v500 + B2 @3e-4）= 36.81/19.85 **比它还低 −1.00 All / −0.40 Perf** → **B2 确实无益**。此前拿 v500（33.34/17.90）当对照，把「高 lr 续训本身的 +4.47pp」错记成了 B2 的功劳。
+4. **lr 阶梯是「阶跃」不是「斜坡」**：3e-5 → 1e-4 一次跳 +5.9pp（v507 34.02 → v550 39.94），1e-4 → 3e-4 完全饱和（39.94 vs 39.92；Perf 23.30 vs 23.19）→ **lr 这条杠杆已用尽，不必再往上加**。
+5. **focal γ2 是灾难性负结果**（v554/v558 跑出来了）：14.09/8.57（cpt=551 @3e-4）与 23.99/14.63（cpt=38 @3e-5），远低于各自基底 40.04/23.81 与 37.59/21.10。机制：focal 压掉「易分背景负样本」后**点头变成过度激进**，存活链从 ~70% 崩到 **16% / 27%**（2-B 事件先掉：v558 的幸存链里 82.5% 来自单-B 事件，正常只有 58%）；活下来的链质量极高（原始分母 86.75% / 89.35%），但覆盖率崩盘 → **净效果是灾难**。**focal（γ=2 × 现有 pos_weight）这条路关闭。**
+6. **链级 recall 是「保链≠修链」的另一极**：v555 = 35.19/19.73（比 v38 掉 2.4pp）。它确实把 N 拉到 13103/13490（**保链有效**），但保下来的链质量差；v556 的 stack 正是被它从 40.04 拖到 39.25。`chain_recall_weight=1.0` 应废弃或大幅调小。
+7. **联合路线再次无收益**：v549（mass+mom）= 33.92/19.47 ≈ v507（34.02/19.62）。
+8. **公开线复现链成功**：**v61（P2 = CERN v37 配方）** 固定分母（N_total_public=12774）= **59.14 / 26.41**，超 v27（51.66/22.76）+7.5pp All、超 P1 v60（54.52/23.43）+4.6pp → **CERN 配方可迁移到公开数据**。
+9. **本批证否清单**：focal γ2（−26pp）、chain_recall（−2.4pp）、B2（−1.0pp vs 正确对照）、mass+mom 联合（≈0）、低 lr 下的点/边再平衡（≈0）。
+
+### P. focal 设备 bug（已修，结果已验证）
+
+- **根因**：`RuntimeError: Expected all tensors to be on the same device` —— `pos_weight` 由 `transform_pos_weight` 生成在 **CPU**（`torch.ones(...)`），`nn.BCEWithLogitsLoss` 内部会搬设备，而 [dfei_lightning_module.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/lightning_module/dfei_lightning_module.py#L17-L31) 里的裸 `F.binary_cross_entropy_with_logits` 不会。**已修**（`pos_weight.to(logits.device)`）。
+- **验证**：v554 / v558 均跑完 20ep 且 `EXIT CODE 0`（09-16 11:31 / 11:56）→ 修复有效。此前 focal γ2 零证据，现在有了（见 O.5，负结果）。
+- **ab09_mom（v508）仍缺**：上次是提交终端 env 超 64KB（65682 B）导致重排 179 次全废，从干净终端重提即可。
+
+### Q. 作业状态（2026-09-16 12:00）
+
+| job | ver | 内容 | 状态 |
+|---|---|---|---|
+| 10346042 | v554 | 点w5 + focal γ2 | ✅ 09-16 11:31（23.99 / 14.63）|
+| 10346043 | v558 | focal γ2 | ✅ 09-16 11:56（14.09 / 8.57）|
+| 10336464 | v550 | lr 1e-4 探针 | ✅ 09-15 21:38（39.94 / 23.30）|
+| 10336469 | v560 | v500 高 lr 对照 | ✅ 09-15 19:29（37.81 / 20.26）|
+| 10346041 | v563 | v557 复现 | 跑中（16/20 ep）|
+| 10320765 | v532 | v511_mass_gen 150ep | 跑中（epoch 120/150）|
+| 10358942 | v562 | 点w5 + 边w3 合体 | 排队中（**不指定节点**，见 GPU_NOTE 第 6 节）|
+
+
+## 最新进展（2026-09-12）
+
+### A. 固定分母获独立验证 ✓
+`noprune`（点+边**全关**，GPU 管线）N = **17561**，与 CPU 统计的 N_total **完全一致** → 修正口径可靠。
+
+### B. 剪枝扫描与 2×2 归因（v47，固定分母 17561）
+
+| 配置 | N | N/NT | All# | Perf# | All%fix | Perf%fix |
+|---|---|---|---|---|---|---|
+| noprune（都不剪）| 17561 | 100% | 169 | 84 | 0.96 | 0.48 |
+| thr0.80 | 14015 | 79.8% | 5280 | 2950 | 30.07 | 16.80 |
+| thr0.85 | 13361 | 76.1% | 5940 | 3352 | 33.82 | 19.09 |
+| thr0.88 | 12879 | 73.3% | 6372 | 3605 | 36.28 | 20.53 |
+| **thr0.90（最优）** | 12436 | 70.8% | 6947 | **4066** | 39.56 | **23.15** |
+| thr0.95 | 11106 | 63.2% | **7044** | 4022 | 40.11 | 22.90 |
+| thr0.99 | 7480 | 42.6% | 6013 | 3354 | 34.24 | 19.10 |
+| nodeoff（点关/边0.9）| 16743 | 95.3% | 2219 | 1175 | 12.64 | 6.69 |
+
+**2×2 归因**：都剪→6947；只边剪（点关）→2219；都不剪→169。→ 点剪枝边际 **+4728**、边剪枝边际 **+2050**（**点 ≈ 2.3× 边**；链存活轴上 5.5×）。两轴都真有用，**thr0.90 是甜点**（0.80/0.85/0.88 更差，0.95 仅 All# 略高而 Perf# 更低）。
+
+### C. 消融链收尾（修正口径，All#/Perf#）
+
+| 版本 | 说明 | N | All# | Perf# | Perf%fix |
+|---|---|---|---|---|---|
+| ab08 (v507) | **结构头**(depth+RC, 基线v504) | 12542 | 5975 | **3445** | 19.62 |
+| ab00 (v509) | **空微调对照**(v500+20ep) | 12417 | 5843 | 3158 | 17.98 |
+| chain A1 (v530) | 累加链 A1(v500+B2+source) | 12521 | 5722 | 3110 | 17.71 |
+| v500 基线 | — | 12304 | 5854 | 3144 | 17.90 |
+| v504 | chain-CE | 12432 | 5917 | 3360 | 19.13 |
+| v506 | 质量头 | 12487 | 5831 | 3377 | 19.23 |
+
+- **结构头是目前最好的附加项**（+85 over v504，+301 over v500）；v504 之上排序：**结构头(+85) > 质量头(+17) > source(-1)**。
+- **空微调对照几乎无漂移**（3158 vs 3144）→ 20ep 微调本身不改变性能，消融对比可信。
+- **累加链 A1 无收益**（-34）→ B2/source 确实没用，不是"贪心回退切断协同"。
+
+### D. ⚠️ 噪声标定（重要）
+方案A 首轮 4 个 run 因 bug **功能上完全等价**，其差异即为纯种子噪声：Perf# 3871/3809/3788/3798 → **run-to-run 噪声 ≈ ±75 Perf#（±2%）**。
+→ 判读时 **Perf# 差异 < ~100（<2.5%）不能算有效**。据此：**ab08 的 +85 处于噪声边缘**，需复现；chain-CE 的 **+216 稳健**。
+
+### E. 方案A（上下文感知剪枝头）首轮**无效**——实现 bug，已修并重跑
+
+- 设计：`s'_v = s_v + γ·MLP([h_v, s_v, AttnAgg(邻域 h_u,s_u,e_vu,s_e), mean_edge_score])`（SAGPool/CRF 式），只挂最后一个 GN block，默认关。
+- **Bug**：同时把 γ 与残差末层**双零初始化** → ∂L/∂γ 与 ∂L/∂W2 同时为 0 → **头永久锁死恒等**（实测训练后 γ=0、末层|w|=0 未变）。首轮 4 档（version_541–544）作废，已改名 `*_deadlock_init`。
+- **修复**：只置零残差末层、γ 初始化为 1 → 起始恒等且梯度可通（grad≈5.0 已验证）。已重提为 **v545-548**：ctxmean/ctxattn/ctxtopk/ctxedge(含边精修)，job 10325685–10325688。
+- **有效对照**：`ctxoff`（v540，v38+纯20ep 微调）= **22.04 / 38.23** —— 与 v511（v38+attention，22.11）基本相同 → **attention 本身相对纯微调无增益**；v47(23.15) 仍领先 +1.11。
+
+## 最新进展（2026-09-13）
+
+### F. ⭐ Oracle 干预实验 —— 瓶颈定位：剪枝分类质量（固定分母 17561）
+
+用真值**均匀改写重建端剪枝输入**（frac=1.0 = 全量干预），量"剪枝质量"对下游重建的价值：
+
+| 配置 | N | All# | Perf# | All_fix% | Perf_fix% | 含义 |
+|---|---|---|---|---|---|---|
+| v47 基线（thr0.9） | 12436 | 6947 | 4066 | 39.56 | 23.15 | — |
+| oracle_addtp（点 recall→1） | 16742 | 9498 | 5630 | **54.09** | **32.06** | 只补回被误删的真值径迹 |
+| oracle_rmfp（点 precision→1） | 12486 | 9603 | 5373 | **54.68** | **30.60** | 只去掉假阳性径迹（recall 不变） |
+| **oracle_nodeboth（点=真值）** | 16743 | 12643 | 7318 | **71.99** | **41.67** | 点 P/R 都修 |
+| oracle_edgeboth（边=真值） | 12486 | 12486 | 7039 | 71.10 | 40.08 | 边剪枝质量上限 |
+| oracle_perfect（点+边=真值） | 17561 | 17517 | 10154 | **99.75** | **57.82** | 理想图 |
+| oracle_addfp（加回假阳性径迹） | 12485 | 2969 | 1523 | 16.91 | 8.67 | 反向对照 |
+| v47_nodeoff（点全关） | 16743 | 2219 | 1175 | 12.64 | 6.69 | 保留全部径迹 |
+| v47_noprune（都不剪） | 17561 | 169 | 84 | 0.96 | 0.48 | — |
+
+**可加性分解**（严格成立）：`All% ≈ P(链在点剪枝后存活) × P(存活链被边剪枝+重建还原)`
+
+| 配置 | 点：链存活率 N/17561 | 边：条件重建率 All#/N | 乘积 |
+|---|---|---|---|
+| 基线 | 12436/17561 = 70.8% | 6947/12436 = 55.9% | 39.56 ✅ |
+| addtp（只动点 recall） | 16742/17561 = 95.3% | 9498/16742 = 56.7% | 54.09 ✅ |
+| nodeboth（点全修） | 16743/17561 = 95.3% | 12643/16743 = 75.5% | 71.99 ✅ |
+| edgeboth（只动边） | 12486/17561 = 71.1% | 12486/12486 = 100% | 71.10 ✅ |
+| perfect | 100% | 99.8% | 99.75 ✅ |
+
+→ **点剪枝头两边都弱，且两边都值钱**：
+- 只修 **recall**（补回被误删真迹）→ **+14.5pp**（39.56→54.09）
+- 只修 **precision**（去掉假阳性迹）→ **+15.1pp**（39.56→54.68）
+- 两边都修 → **+32.4pp**（39.56→71.99）
+- 反向：加回假阳性 → **崩到 16.91**
+⇒ 点头（precision 0.70 / recall 0.71）是**唯一最大瓶颈**；边头（0.85/0.945）次之但仍是"条件重建率 55.9%→100%"的开关。
+
+**最强证据（2026-09-13）**：点剪枝头在 loss 里**权重只有 1，而边是硬编码 33×**（[dfei_lightning_module.py L683](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/lightning_module/dfei_lightning_module.py#L683)）；配置里本意用来再平衡的 `node_prune_weight: 10.0` / `lca_weight: 10.0` **没有任何代码读取**（死键）→ **ab01 "rebal" 一直是空操作**。→ 已实现为真开关（见下 K 节）。
+
+⚠️ 打印的 `[oracle-剪枝质量] precision/recall` 是**干预前基线**（代码在改写前统计）→ `perfect` 显示 0.70 并非未生效。
+
+### G. ab 链固定分母重排（旧"7 步 6 REJECT"作废）
+
+| ver | 内容 | All_fix% | Perf_fix% | 判读 |
+|---|---|---|---|---|
+| v500 | rebal（起点） | 33.34 | 17.90 | — |
+| v501 | B2 | 32.70 | 17.72 | − |
+| v502 | cl2w | 33.27 | 18.01 | ~ |
+| v503 | hinge | 32.78 | 17.74 | − |
+| v504 | chain-CE | 33.69 | 19.13 | **+0.35/+1.23 稳健 ✅** |
+| v505 | source | 33.58 | 19.13 | ~ |
+| v506 | mass | 33.20 | 19.23 | All−, Perf+ |
+| **v507** | **struct（叠在 v504）** | **34.02** | **19.62** | **链内最好 +0.68/+0.72** |
+| v509 | 空微调对照 | 33.27 | 17.98 | ≈v500 |
+
+### H. 固化假说 —— 已有直接证据
+
+`v509`（v500 + 20ep、**零改动** @lr3e-5）= **33.27 / 17.98** vs v500 **33.34 / 17.90** → **零漂移**（±0.07pp）→ 支持"ab 起点已饱和、微调挪不动"。
+待验证：**lr 探针** v550(@1e-4) / v551(@3e-4)，与 v509(@3e-5) 组成 lr 阶梯，区分**真固化** vs **步长太小**。
+
+### I. 联合实验（2026-09-13 提交）
+
+- **v549** `train_CERN_join_v507_massmom.yaml`（cpt=507）：在 ab 链最好的 v507（chain-CE + struct）上成组叠 **mass + mom**（低权重），20ep → 回答"多方法联合能否 > 单项之和"。
+- **v550 / v551**：固化 lr 探针（1e-4 / 3e-4）。
+- **接受判据一律用固定分母**（N_total=17561；脚本 `wmpgnn/analysis/recompute_fixed_denominator.py`，CSV 已刷新）。
+
+### J. 复看历史"联合"尝试（修正口径）
+
+- **v48**（mass+struct+mom 三头同叠）= **37.36 / 21.40** vs v38 **37.59 / 21.10** → **打平**（差 0.23pp，噪声内）。旧"All 50.6% 下降→触发消融"是**口径假象**。
+- **累加保留链 A1**（v530 = v500 + B2 + source）= **32.58 / 17.71** vs v500 33.34/17.90 → 无收益；**A2/A3/A4 的 config 从未创建、从未运行**（"成组累加复刻 v31→v47"实际只走了第一步）。
+
+### ⭐⭐ K. 固化假说被**证伪**：不是挪不动，是 lr 太小（2026-09-13/14）
+
+| 版本 | 配方 | All_fix% | Perf_fix% | 对照 |
+|---|---|---|---|---|
+| v507 | ab 链最好（chain-CE + struct） | 34.02 | 19.62 | 起点 |
+| v549 | v507 **+ mass + mom**（联合实验） | 33.92 | 19.47 | **无增益（略降）** |
+| **v551** | **v507 + 20ep @ lr 3e-4** | **39.92** | **23.19** | **+5.90 / +3.57；追平并略超 v47（39.56 / 23.15）** |
+| v553 | v38 + 20ep @ lr 3e-5，边 loss 权重 **33 → 3** | 37.96 | 22.84 | vs v38：**+0.37 / +1.74** ✅ |
+
+**关键推论**：
+1. **"固化"是误读**：`v509`（20ep @ **lr 3e-5**）零漂移被当成"平坦极小"，但同样 20ep、lr 提到 **3e-4** 却涨 **+5.9pp All** → 之前的"微调无效"是**步长太小**，不是模型挪不动。v47 的"强固化"结论需重验。
+2. **因此 ab/累加链的一大串 REJECT 都不可信** —— 它们全在 lr 3e-5 下判定（B2/cl2w/hinge/source/mass/联合 v549 均如此）。**ab 链可能一直在测噪声。**
+3. **边 loss 去主导（33→3）有效**（v553 +1.74 Perf，超噪声 ±0.43pp），与 oracle 的"点/边权重严重失衡"判断一致。
+
+### L. 剪枝优化的代码开关（2026-09-13 已实现，默认 = 旧行为）
+
+[dfei_lightning_module.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/lightning_module/dfei_lightning_module.py)：
+- `node_prune_weight` / `lca_weight` / `edge_prune_weight`（默认 1 / 1 / 33）——原本是**死键**，现在真正生效；
+- `prune_focal_gamma`（默认 0）——剪枝头 focal BCE；
+- `chain_recall_weight` ——**链级 min-pooling recall 损失** `L = -log σ((min_{v∈chain} s_v − thr)/τ)`：直接罚每条真值链里**最弱**的那个点/边（链成员由 `truth_chain_labels` 对 `y>0` 真值边做并查集恢复）。
+
+并行 4 arm（全部 cpt=38，20ep，lr 3e-5）：v552 点权重 1→5 / v553 边权重 33→3 / v554 点 5+focal γ2 / v555 链级 recall。**v553 已完成（37.96/22.84 ✅）**，其余 3 个因作业内重提撞 env 64KB 上限、重试链断而死，已于 2026-09-13 重新提交（job 10331263–10331266）。
+
+### M. 下一批 6 个并行（2026-09-13/14 提交，全部 20ep、固定分母判据）
+
+| job | ver | 基底 | lr | 改动 | 目的 |
+|---|---|---|---|---|---|
+| 10331276 | v556 | v551 | 3e-4 | 点w5 + 边w3 + 链recall | **A: 叠加已确认杠杆冲 40%+** |
+| 10331278 | v557 | v551 | 3e-4 | 点权重 5 | C: 点再平衡 @高 lr |
+| 10331280 | v558 | v551 | 3e-4 | focal γ2 | C: 偏 precision 的硬例加权 |
+| 10331277 | v559 | v551 | 3e-4 | 无（对照） | 高 lr 续训增量基准 |
+| 10331279 | v560 | v500 | 3e-4 | 无（对照） | B 的高 lr 基准 |
+| 10331281 | v561 | v500 | 3e-4 | +B2(cut0.85) | **B: 重测 ab02 的 REJECT 是否 lr 假象** |
+
+注：所有从 v500/v38 派生的配置都显式把 `node_prune_weight`/`lca_weight` 归一到 1.0 —— 因为它们曾是死键，现在生效后旧值 10.0 会意外改变行为。
+
+## ⚠️ 评估口径修正（2026-09-11）—— 所有旧百分比作废
+
+**问题**：重建指标的分母不是固定的"真值 B 总数"，而是**剪枝后图上还能解出真值链的 B 数**。
+- [reconstruction.py L193-196](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/reconstruction/reconstruction.py#L193-L196) 在**真值解码之前**原地删节点；
+- [pruners.py L51-98](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/util/pruners.py#L51-L98) 的 `true_node_pruning` 会删掉 `tracks` 的**所有逐节点属性**（含 `sig_keys` 真值末态键）；
+- [reco_helper.py L75-90](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/reconstruction/reco_helper.py#L75-L90) 只用**幸存的** `sig_keys` 建真值 LCA。
+→ **阈值越高 / 剪枝 MLP 越严 → 分母越小 → 百分比虚高**。这是选择效应，不是模型变强。
+
+**量化**（同一 v47 模型，仅改推理阈值）：
+
+| thr | 原分母 N | 原 All% | 原 Perfect% | All# | Perfect# |
+|---|---|---|---|---|---|
+| 0.85 | 13361 | 44.46 | 25.09 | 5940 | 3352 |
+| 0.90 | 12436 | 55.86 | 32.70 | **6947** | **4066** |
+| 0.95 | 11106 | 63.43 | 36.21 | 7044 | 4022 |
+| 0.99 | 7480 | 80.39 | 44.84 | 6013 | 3354 |
+
+→ 绝对成功数几乎不变（甚至下降）。**"thr0.9 次优"的结论作废**；thr0.9 是合理工作点。
+
+**固定分母**：`N_total = 17561`（20000 事件，完整图上的真值链总数；由 `wmpgnn/analysis/compute_n_total.py` 纯 CPU 统计，与模型无关）。
+把因剪枝而解不出的 B 一律记为失败，即得统一口径：`修正% = 成功计数 / 17561`。
+
+**修正后的核心版本值**（thr0.9 同口径；脚本 `wmpgnn/analysis/recompute_fixed_denominator.py`，全表见 `logs/fixed_denominator_metrics.csv`）：
+
+| 版本 | Perfect 修正% | All 修正% | (旧 Perfect / All%) |
+|---|---|---|---|
+| v31 | 12.30 | 22.49 | (23.93 / 43.42) |
+| v36 | 18.77 | 35.17 | (26.28 / 49.24) |
+| v37 | 19.50 | 36.21 | (27.25 / 50.60) |
+| v38 | 21.10 | 37.59 | (29.26 / 52.13) |
+| v46 | 21.28 | 38.22 | (30.47 / 54.73) |
+| **v47** | **23.15** | **39.56** | (32.70 / 55.86) |
+| v48 | 21.40 | 37.36 | (29.00 / 50.63) |
+| v510 | 21.75 | 38.01 | (29.94 / 52.34) |
+| v511 | 22.11 | 38.39 | (30.90 / 53.66) |
+| v515 (v47+attn) | 22.95 | 39.04 | (31.60 / 53.76) |
+| v516 | 22.72 | 38.95 | (31.25 / 53.59) |
+| v518 | 22.52 | 38.73 | (31.41 / 54.02) |
+| v520 | 22.69 | 38.87 | (31.35 / 53.70) |
+| v500 基线 | 17.90 | 33.34 | (25.55 / 47.58) |
+| v504 chain-CE | 19.13 | 33.69 | (27.03 / 47.59) |
+| v505 源 | 19.13 | 33.58 | (26.90 / 47.23) |
+| v506 质量 | 19.23 | 33.20 | (26.47 / 45.71) |
+| v53 升维 | 15.84 | 26.78 | (22.76 / 38.50) |
+| v512 升维 | 13.34 | 24.03 | (21.34 / 38.43) |
+| v514 wide | 15.35 | 25.44 | (22.75 / 37.69) |
+
+**修正后结论变化**：
+- **v47 仍最优**，但领先幅度缩小（同 thr0.9：v47 23.15 > v515 22.95 ≈ v516 22.72 > v511 22.11）。
+- 消融链结论**不变**：以 v504 为基线，source −0.00、mass +0.10、All 均为负 → 仍只有 chain-CE 真有效。
+- **PV 分簇**：`pvcluster_full` 修正 20.72 / 36.91 vs v38 21.10 / 37.59 → 确属真差，不是分母假象。
+- 跨**阈值**比较从此统一（都在 17561 上）；跨**版本**也统一。
+
+**公开数据线**（自有分母，跨数据集不可比）：`N_total_public = 12774`（10000 事件；与历史 `truth_full` 口径的 12806 交叉印证）。
+
+| 公开版本 | Perfect 修正% | All 修正% | (旧 Perfect / All%) |
+|---|---|---|---|
+| **v27 简单栈** | **22.76** | **51.66** | (41.48 / 94.14) |
+| v45 v38 全栈 | 8.06 | 19.70 | (9.30 / 22.75) |
+| v49 续训 | 5.95 | 14.15 | (6.45 / 15.33) |
+
+→ 结论不变：**公开数据上 v27 简单栈远好于 v38 全栈**（22.76 vs 8.06）；且 v27 在公开集上只用到 7010/12774 真值链（剪枝丢了 ~45%，比 CERN 的 ~29% 更严重）。
+
+### 阈值影响重估 + 口径健全性验证（2026-09-11）
+
+**口径健全性**：真值链的平均长度在 thr0.85→0.99 下**完全不变**（3.325–3.344），尺寸直方图也几乎重合 → 剪枝对真值链是**"整条原子保留/整条消失"，无截断/拆链**。故"丢失链记为失败"的固定分母定义成立。
+
+**阈值影响**（修正口径，v47 同一模型）：
+
+| thr | N（可用链）| All% | Perfect% |
+|---|---|---|---|
+| 0.85 | 13361 | 33.82 | 19.09 |
+| **0.90** | 12436 | **39.56** | **23.15** |
+| 0.95 | 11106 | **40.11** | 22.90 |
+| 0.99 | 7480 | 34.24 | 19.10 |
+
+→ 呈**倒 U**，甜点在 0.90–0.95（差在误差内）；**放宽到 0.85 也变差**（多救 925 条链但背景增加，Net All# 反降）。**0.9 无需放宽，"越高越好"的假象已消除。**
+
+**新发现·最大杠杆**：thr0.9 只用到 **12436/17561 = 70.8%** 的真值链，**29.2% 的 B 链被整条剪掉**（记为失败）。消失链的长度分布正常 → 不是"难链"，而是模型把**整条链的点/边置信度压到 ≤0.9** → **分类 recall 问题，非阈值问题**。
+
+**下一步优化规划（2026-09-11 并行提交 8 个推理，job 10322200–10322207）**：
+1. `v47_noprune`（thr -1/-1）：校验 N_total=17561（GPU 管线 vs CPU 统计）
+2. `v47_nodeoff`（node -1 / edge 0.9）③ `v47_edgeoff`（node 0.9 / edge -1）：**定位是点剪枝还是边剪枝在杀链**
+3. `v47_node09_edge07` / `v47_node07_edge09`：**非对称阈值**能否在不引背景的前提下救链
+4. `v47_thr080/088/092`：细扫确认甜点
+5. 依诊断结果择一主攻：若边为主 → 非贪心重建（全 LCAG + 软权重）；若点为主 → 节点头 recall 监督（focal/加权）
+（低优先级的批量 thr0.95 复评已停，让 GPU 给诊断）
+
+---
+
+
+**并行在跑（6 个 job）**
+| job | 版本 | 任务 |
+|---|---|---|
+| 10318006 | v530 | 累加保留链 A1（+B2+source）|
+| 10317999 | v509 | 空微调对照（无优化 20ep，校准漂移）|
+| 10317986 | v507 | 贪心消融链 ab08（struct head）|
+| 10297670 | v521 | 组合验证（B2+cl2w+chaince 打包）|
+| 10297649 | v519 | 世代法 attn-mass（150ep，跑中）|
+| 10317574 | v60 | 公开数据复现 P1（v27+B2+source）|
+
+**近期关键结论**
+- **v516**：v47+attn 续训 60ep 仍 < v47（53.59/31.25）→ **坐实"后插 attention 到已固化 mass 态 = 机制冲突"，非预算不足**，转世代法。
+- **v520（世代法 struct，完成）**：v47+struct 世代长训跑满 179ep → All 53.70/Perfect 31.35，**仍 < v47（55.9/32.7）**，与中途 v518(ep131) 持平 → **struct 世代收束，不加 mom**。→ **v47 是固化态：往上加 attention(v516) 或 struct(短训 v48 / 世代长训 v520) 都超不过它**。
+- **贪心消融链 7 步 6 REJECT**（仅 ab05 chain-CE ACCEPT → 基线 v504，47.59/27.03）。已排除代码 bug：cpt 加载生效（权重 RMS 0.001）、新增项 loss 均有值。**结构性原因 = 贪心回退切断协同**（单独无效的 B2/source/mass 被丢弃 → 组合组不起来）。
+- **公开数据**：v27 简单栈修正口径 **Perfect 22.76 / All 51.66**；而 v45/v49（v38 全栈）只有 8.06/5.95 → **v38 全栈对公开数据负贡献**。复现改走 v27 起逐层叠加。
+- **⭐ 阈值扫描 → 已证伪（口径假象）**：初看 thr0.9→0.95 全指标变好（All 55.86→63.43、Perfect 32.70→36.21），但见上方「评估口径修正」——分母从 12436 缩到 11106，绝对成功数几乎不动。**thr0.9 次优的结论作废**。
+- **⭐ 批量阈值复评（2026-09-11 提交，job 10321188）**：对 **17 个"曾判无提升/需对照"版本**统一以 **thr0.95** 重评，检验此前 REJECT / "不如基线" 是否为**评估口径**所致。脚本 [submit_eval_batch_thr095.sh](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/submit_eval_batch_thr095.sh)（幂等断点续跑 + 坏卡自动重排 + 自动汇总 → `logs/eval_batch_thr095_results.txt`）。原理：`adjust_config_evaluation` 会自动读取各版本自己的 `input_config.yaml` 作架构基底，故只生成最小 config 覆盖阈值即可。清单：消融链 `500(基线) 501(B2) 502(cl2w) 503(hinge) 504(chainCE✅) 505(source) 506(mass)`；attention 线 `510 511(✅) 515 516`；v47 世代线 `518 520`；容量/组合线 `48 53 512 514`。（v507/v509 因 `input_config.yaml` 缺失且仍在训练，留待后续）
+
+**待办**：消融链 ab08/ab09 收尾；累加链 A2–A4；公开复现 P2–P4；组合验证/空微调对照/世代法 resume 出结果判读；v47 阈值扫描 thr085/097/099 判读；**批量 thr0.95 复评（17 版本）判读**。
+
+### 下一轮训练（2026-09-11 提交）— 双目标并行
+- **目标1 验证优化有效性**（含公开数据 + 各优化意义）：
+  - CERN：累加链 A1–A4（成组累加，对照贪心消融）、组合验证 v521、空微调对照 ab00_drift。
+  - 公开：复现链 P1–P4（逐层）；**`train_public_combo`（v27+B2+cl2w+chaince）**——验证公开数据上协同是否成立（job 10320770 → v533）。
+- **目标2 突破 v47 (32.7/55.9)**：
+  - **换起点/世代**：v519（v38+attn+mass 世代，跑中，best val 35.548 < v47 35.677 ✅）；**`train_CERN_v511_mass_gen`**（从已验证的 v511=v38+attn(30.90) 世代加 mass，job 10320769 → v532，150ep 关早停）。
+  - **增长点探针·剪枝阈值扫描**：`eval_CERN_v47_thr095`（job 10320771）、`eval_CERN_v511_thr095`（job 10320772）——检验 thr 0.9 是否次优（瓶颈可能在剪枝/组装而非边分类）。
+- 依据：v47 强固化（后插 attention v516/struct v520 均失败，v520 长训 66ep 后 val 平台、零改善→早停没误判）；文献（梯度干扰/表征漂移/landscape 平坦化）→ 对策=换未固化起点(v38 系) + 保护性注入 + 换选择指标(PerfectReco)。
 
 ---
 
@@ -143,6 +481,20 @@
 - 训练正常推进，best **ep88（val 34.579）**，已远优于 ep51（33.22→34.579 为 loss 更低）。
 - ep88 评估阶段因**超出 32GB cgroup 内存限制**被 held（实测 31848MB）→ 已提高内存限制（64GB）重提续训至 100。
 
+### 公开数据重评估 v27（2026-09-10）—— ⭐ v38 全栈对公开数据是负贡献
+- 现状：公开线 v45/v49（**v38 全栈** + lr 1e-3）当前口径只有 Perfect 9.30/All 22.75（v45）、6.45/15.33（v49）。
+- 用当前口径（thr0.9·50文件·LCAG）重评估 **version_27**（`LCA_weights:` 修好 + **简单栈**无 b2/chaince/source + 温和 lr 6.25e-5，cpt=23 续训）→ **All 94.14 / Perfect 41.48**（1B 41.31 / 2B 41.27 / >2B 52.07）。config `eval_public_v27_reeval.yaml`。
+- **结论**：公开数据上"简单栈"能到 Perfect 41%+，而 v38 全栈（尤其 B2 cut0.85）只有 9% → **v38 全栈为 CERN 调优、对公开数据是负贡献**。公开数据复现地基应取 **v27 式简单栈** + 世代法逐层加头，而非照搬 v38。
+- 注：v27 的 LCAG 出现 `pred1=0%`/`pred3=0%`（只在 class0/class2 间 argmax），但重建仍 41% → 公开数据重建对 class1/3 细分不敏感（与 CERN 不同），需留意。
+
+### 公开数据复现链（2026-09-10 起，⭐ 严格按 CERN v31→v47 顺序）
+- 起点 = **v27**（≈CERN v31：简单栈 + 修 class weight）。逐步映射 CERN 优化顺序，每步续训上一步：
+  1. **P1 (=CERN v36)** `train_public_repro_p1_v36.yaml`（lv60, cpt=27）：**+B2(b2_cut 0.5) + source head**，lr 5e-5，40ep，关早停。**已提交 job 10317574 → version_60**。
+  2. **P2 (=v37)**（待 P1 结果）：+class2加权3.0 + chain_lca_loss(hinge) + b2_cut 0.7。
+  3. **P3 (=v38)**（待 P2）：class2加权2.0 + b2_cut 0.85 + chain_lca_ce。
+  4. **P4 (=v47)**（待 P3）：+mass head（log10 归一化）。
+- 目的：在公开数据上**完整复现 CERN 的有效优化路径**（逐层顺序叠加），而非照搬 v38 全栈一步到位（已证明对公开数据负贡献）。
+
 ### v50 / v51 / v52 —— 小规模单头消融（定位叠加竞争）
 - **设计**：从 masshead2 best（v47 ep113）续训 10 epoch（20 训练文件），5 文件小评估，仅加一个头：
   - **v50 base**（仅 mass，对照）：AllParticles 51.41 / Perfect 29.67
@@ -168,6 +520,20 @@
 | LCAG class2 | 41.26% | 47.66% | 44.22% | +2.96pp |
 | LCAG class3 | 75.43% | 78.32% | 77.17% | +1.74pp |
 | 2B 事件 Perfect | 15.22% | — | 20.24% | **+5.02pp** |
+
+**v38+attention 对照（thr0.9 同口径）**
+
+| 指标 | v38 基线 | +纯内容自注意力（v510） | +边 bias 完全体（v511） | v38→v511 增量 |
+|---|---|---|---|---|
+| PerfectReco | 29.26% | 29.94% | **30.90%** | **+1.64pp** |
+| AllParticles | ~50.6% | 52.34% | **53.66%** | **+3.1pp** |
+| LCAG class1 | — | 77.23% | **78.27%** | — |
+| LCAG class2 | — | 50.36% | 49.84% | — |
+| LCAG class3 | — | 54.52% | 53.42% | — |
+| 1B 事件 Perfect | — | 35.09% | **36.21%** | — |
+| 2B 事件 Perfect | — | 22.74% | **23.40%** | — |
+
+> v511 = v38 栈 + tt 边特征作注意力 bias（ParT 式）——比纯内容版再 +0.96pp Perfect / +1.32pp AllParticles，边 bias 确认有效。
 
 ---
 
@@ -197,15 +563,43 @@ GPU 分配注意：调度器会把多个作业塞同一物理卡（GPU_NOTE.md �
 
 三条线并行（组会/顾问建议的"回到 v31 逐步归因" + 宽 latent 补跑 + attention 新方向）：
 
-### 1. v53 宽 latent（asym）链式续训 — job 10243307 RUNNING
+### 1. v53 宽 latent（asym）链式续训 — ✅ 已完成（2026-09-04 21:13，ep149/149）
 - 背景：asym（tracks 32 / tt 边 24）从 0 起每次 ~75 ep 就被墙钟截断（~2.9 天/段），曾两次停在 ep74。
 - **链式续训**：`submit_train_cern_v53_resume.sh` 每段自动找最新 `epoch_epoch=*.ckpt` 续训，直到 ep149。
 - **坑（2026-09-03 已修）**：PL resume 每次写**新 version 目录**（v53→v54），而脚本原扫描 version_53 → 误判"无进展"停链。修复：配置钉死 `log_version: 54` + resume_ckpt 指向 version_54 ep112。
-- 现状：**ep114/149**（version_54）；ep112 自动评估 All **41.49** / Perfect **24.18**（未收敛，仍在上升）。cpt 标签 `v38_asym_mass_final`。
+- **结果（thr0.9 最终评估，12228 事件）**：All **41.49** / Perfect **24.18** —— 与 ep112 自动评估**完全相同**（ep112→149 共 37 ep 零增益，已进平台期）。LCAG class3 几乎全并入 class2（pred3=0%），2B 事件 Perfect 仅 14.56。
+- **结论**：asym 宽 latent 从 0 训练到 150 ep 收敛后仍明显低于 v38 栈微调线（Perfect 24.18 vs v38 29.26/v47 32.7）——该方向收束，不再续跑。cpt 标签 `v38_asym_mass_final`。
 
-### 2. 消融链（回到 v31 逐项归因）— job 10243310 RUNNING（ab01）
+### 1b. v38 栈升维 32/24 + 部分继承（容量单变量）— ✅ 完成（v512: 差, 预算不足非证伪）
+- 动机：v53 混了 容量/从0/新头 三变量无法归因；本实验只动**容量**——encoder/GNblocks/decoder 的 tracks 16→32、tt 边 16→24，inference 栈与 v38 完全一致（无 mass head/attention）。
+- **部分继承机制**（v53 只能从 0 是因为升维后 load_state_dict shape 不匹配）：`load_module._upscale_conflicts` 加载前检测冲突 key——各类型 MLP 末层 (128→32/24) 与下游头输入层 shape 冲突 → 随机化重学；blocks/decoder 内 tracks/tt 的 **Lazy 输入层**（PL 会用 ckpt 模板错误 materialize 成 16）→ 删 key 保持 uninit，首 forward 按真实输入 (32/24/64) 初始化；encoder 输入层 (raw 未变) 与 pvs/global/tracks_pvs (16 未变) 完整继承。`DFEILightningModule.load_state_dict` 同步支持 wrapper 级头 (source_head 输入 17→33) 的 shape 过滤。
+- 冒烟 `smoke_asym_up.py`：51 个冲突 key drop、其余 250 个权重 100% 继承、27 个 Lazy 输入层待首 forward → ALL PASS。
+- **坑（2026-09-05 已修，两处 concat 输入层）**：
+  - ① 首次 job 首 forward 崩 `mat1(80) mat2(64x128)`——**edge_block 的 tracks_pvs 边模型**输入 `cat(边16, dst pvs16, src tracks32, global16)=80`（v38 为 64），lazy 层 shape 匹配 ckpt 未被 drop → 用旧 64 materialize。
+  - ② 修复后二次崩 `mat1(104) mat2(80x128)`——**global_block 的 global 模型**输入 `cat(tt/tp 边池化 + tracks/pvs 节点池化 + global)`，含 tracks/tt 池化 → 104。
+  - 修复：`_upscale_conflicts` 的 Lazy 判定统一为**blocks 段更新网络一律重学**（lazy 输入层的真实输入/输出由 forward 决定，任何结构升级都可能使其 materialize 错）；decoder/op_trafo 仅 tracks/tt 重学。教训：三类 block 的 concat 输入层（edge/node/global 更新网络）随端点/池化类型维变化，**shape 匹配不代表语义不变**。
+- config `train_CERN_v38_asym_up.yaml`：cpt=38（v38 ep101 best）+ 升维，20ep/200files/thr0.9，log_version 512。
+- **结果（v512，job 10271749 完成）**：All **38.43** / Perfect **21.34**（vs v38 ~50.6/29.26）——val loss 一路降（89.7→39.6, best=ep19）**远未收敛**但重建极差。结论：升维 = 破坏性大改动（51 层 + source head 重学 + 继承深层期待旧分布 → 灾难性干扰），20ep 探针预算严重不足，**不能证伪容量假说**；且 v512(21.34) < v53 从0(24.18) → 继承+大改动+短预算 比 从0 更差。
+
+### 1c. v38 栈 + GN 宽度 128→256（轻量容量测试）— ✅ 完成（v514: 差, 容量线收束）
+- 动机：v53/v512 均无法归因容量——升维是破坏性改动。本实验只加宽 GNblocks.MLP_forward 中间层 128→256：latent 16 进出不变 → encoder/decoder/下游头接口零变化全继承；无 concat/Lazy 变维陷阱；重学面仅 4 blocks 更新网络（115 个 shape 冲突 key 自动重学，186 继承，参数 742K→1.61M）。
+- config `train_CERN_v38_wide.yaml`：cpt=38 + 20ep/200files/thr0.9，log_version 513 → 与 v38 严格单变量对照。若 20ep 内 All ≥ v38 则容量有效强证据；否则看 loss 是否仍降（预算不足可续训）。
+- **坑（2026-09-06 已修，两连）**：
+  - ① 首次 job 加载崩 "Missing key(s)"——relax 触发条件只有"缺新头或 shape 不匹配"，结构升级 drop 的 missing key 不属于两者 → strict 崩（本地冒烟因 pw=ones 的 pos_weight (1,)→() 差异恰好触发 relax 掩盖了 bug）。修复：load_module 手工路径自己剥离 wrapper 级 shape 冲突后 strict=False 加载。
+  - ② 重提后消融链 ab03 (结构未变) 被误 drop——上一版对 blocks/decoder lazy **无条件** drop，未检查结构是否真变。修复：`_upscale_conflicts` 加**结构变化前置判断**（encoder/blocks/decoder/op_trafo 内存在 shape 可读 mismatch 才算结构升级；无则返回空走原 PL 路径）。三场景冒烟验证：wide 115 drop / asym_up 59 drop / ab03 0 drop 全对。
+- **OOM（2026-09-06）**：v513 (batch8) 在 ep12 中段 CUDA OOM——参数翻倍后 (1.6M) batch8 峰值超 10GB 上限（ep0-11 完成且健康，val 39.07 仍降）。处理：batch 8→6（峰值 -25%）续训版 `train_CERN_v38_wide_b6.yaml` resume 自 version_513 ep11 → 补完 20ep（job 10277678 → version_514）。教训：加宽模型必须同步降 batch（10GB 卡约束）。
+- **结果（v514，job 10277678 完成）**：All **37.69** / Perfect **22.75**（vs v38 ~50.6/29.26）——val loss 39.9-41.6 波动，20ep 内与 v38 (35.9) 仍有 4 分差距，重学的 GN 网络远未恢复。
+- **容量线收束结论（2026-09-07）**：三种容量路径全部显著劣于 v38 栈——v53 (latent 32/24 从0, 150ep) 24.18、v512 (继承 20ep) 21.34、v514 (GN 宽 256 继承 20ep) 22.75，vs v38 29.26。即便长训追平也只是"花数倍算力回原水平"。10GB/200files 预算下 16 维 latent 已被用满，瓶颈在结构与监督（class0 稀释/class2 分隔），非容量——**attention（v511 +1.64/+3.1）恰好补此短板**。容量线不再投入。
+
+### 2. 消融链（回到 v31 逐项归因）— watchdog 驱动中（ab04 进行中）
 - 目的（advisor 建议）：PPT 里每个优化同时叠加、无法单独归因 → 从 **v31 基线**出发，按 PPT 顺序每次只加一个优化（20 ep / 200 files / thr0.9 自动评估），终点 = 全优化模型；每步给 before/after 接 S2 折线图。
 - **贪心接受/回退**：每步起点 = 当前"已接受基线"的 best（`logs/ablation_chain.base` 记录，初始 v31：All 43.42/Perfect 23.93）；AllParticles 非降则接受并更新基线，否则回退（保留被否模型作负证据）。接受/回退都 Server酱 通知。
+- **架构（2026-09-07 改）**：GPU 作业内 hep_sub 自重提交不可靠（env 64KB 限制 vs hep_sub 组解析变量 _CONDOR_*/HepJob_* 矛盾 + 调度器静默丢弃作业内重提）→ 主脚本改为**只执行一步**（坏卡 exit77 + touch failed 标记），由 **CPU watchdog**（`ablation_watchdog.sh`，干净 env 从外部 hep_sub）检测 step 推进/失败标记后提交下一步或立即重试。
+- **进度**：ab01(rebal) ACCEPT → 基线 v500 (47.58/25.55)；ab02(B2) REJECT (−1.56pp)；ab03(class2 w) REJECT (−0.55pp，class2 召回仅 +0.3，rebal 后加权重边际小)；ab04(hinge) REJECT；**ab05(chain-CE) ACCEPT → 基线 v504 (All 47.59 / Perfect 27.03)**；**ab06(source head) REJECT（v505 All 47.23/Perfect 26.90 < 基线 v504 47.59/27.03；class1 75.76→80.11 升 +4.35，但 class2 46.70→43.94 降 −2.76，净略降）→ 基线仍 v504**；**ab07(mass head) REJECT（v506 All 45.71/Perfect 26.47 < 基线 v504 47.59/27.03；class2 46.70→50.78、class3 52.50→54.14 升，但 class1 75.76→75.02 降、整体 All −1.88）→ 基线仍 v504**；**ab08(struct head w0.3) 训练中（job 10317986 → version_507，从 v504 叠加 + chain_lca_ce 双开）**。
+  - **ab04 REJECT 根因（2026-09-09）**：ab04 用**纯 hinge**（`chain_lca_loss` 方案5），未启用 `chain_lca_ce`。hinge=`mean((clamp(margin−conf,0))²)`，margin=0.3；在已训练好的 v500 基线上，链内边（LCA y>0）被判类别 softmax 置信 conf 已普遍 ≥0.3 → loss 恒 0、无梯度。证据：v503 的 val_combined_loss 曲线与 v500 几乎重合（best ≈36.071 vs 36.112），LCAG 仅噪声级波动（class1 +0.78/class2 −0.38/class3 −1.23），最终 All 46.21/Perfect 25.01 均劣于基线 47.58/25.55。真正有效的是 **方案6 `chain_lca_ce: true`**（hinge 上追加恒正 CE），v41/v42/v47/v511/v517/v518 皆用；ab04 则是一次自身已退化的测试，非"链一致性思路无效"。
+  - **ab05(chain-CE) 完成，ACCEPT（2026-09-09 首提 10297646 撞 CSVLogger 崩 → 修 config 双开 chain_lca_loss → 重提 10299303/10300107，EXIT 0 → version_504，job 10300107）**：从基线 v500 (cpt=500) 出发 + `chain_lca_ce: true`（方案6）+ `chain_lca_loss`（双开修复 CSVLogger），20ep，over_write ab05_ce。**结果 All 47.59 / Perfect 27.03（对比基线 47.58/25.55 → Perfect +1.48）；LCAG class1 68.74→75.76、class2 41.69→46.70、class3 75.34→52.50（class3 被吞）。判读：ACCEPT（All 非降 +0.01，Perfect +1.48）→ 新基线 v504。**
+- **组合验证（2026-09-09 提交，job 10297670 → version_521）**：消融链单步测法把"有效优化"误判为无效（B2/class2加权 组合有效、单独 REJECT；v50/v51/v52 反向证明单头有效、v48 组合反而降 → 说明强协同）。为校验"单独无效≠无用"，从 v500 基线 (cpt=500) 把 **B2(cut0.85)+class2加权2.0+chain_lca_ce** 三项**机制/loss 级**改动打包（不含 source/mass 头，保持变量干净；无新层 → 结构兼容加载安全），`train_CERN_v500_combo_b2cl2chain.yaml`，150ep + `early_stop_patience:0`。判读：>v500(47.58/25.55)→协同成立；≈v500→需再叠 source/mass 头。<br>⚠️备注：这与"先检查实例、再出 config 审校"的结论一致，若组合有效则需撤回 ab02/ab03 的"无效"结论（改为"缺协同"）。
+- **空微调对照 ab00_drift（2026-09-11 提交，job 10317999 → version_509）**：v500 基线 (cpt=500) + **不加任何优化** + 同口径 20ep/lr3e-5/batch8/gacc2/20文件评估（`train_CERN_ab00_drift.yaml`）。目的：量化"从收敛基线出发 20ep 微调"的**系统性漂移**，用于校准 ab02-ab08 的 REJECT 判定（消融链 7 步 6 REJECT 反常，已排除代码 bug：cpt 加载生效—权重 RMS 0.001；新增项 loss 均有值。剩余疑点=单步口径低估协同优化 + 评估噪声）。若对照也从 47.58 掉到 ~46 → 单步消融低估真实增益。
 - 步骤（config `train_CERN_v500_...yaml` 起，log_version 500-508，explicit log_version + DFEI.cpt 权重加载，版本目录干净独立）：
   1. ab01(500) loss 再平衡（隔离 v36 配方非 PPT 项）
   2. ab02(501) B2 可微剪枝 cut0.85 → **Part 1**
@@ -219,14 +613,40 @@ GPU 分配注意：调度器会把多个作业塞同一物理卡（GPU_NOTE.md �
 - 协议偏差：剪枝步 τ 固定 sharp 值 0.1（每步独立微调，重退火 20 ep 到不了 sharp）；接受指标用 AllParticles 而非 val（跨步 loss 组成不可比）；无噪声容差。
 - 期待：若低权重 struct+mom 通过（v48 失败后的未验证假设），终点可能超过 v47(32.7/55.9)；若被否则停在 ≈v47 并留下每步证据。
 
-### 3. v38 + track 级自注意力（attention 试验）— job 10243510 已提交
+### 4. 累加保留链（2026-09-11 起）— ⭐ 严格复刻 v31→v47 成组累加
+- 动机：上面的贪心消融链"单个加、不升即回退"，会**切断协同**（B2/source 等单独 REJECT 被丢弃 → 依赖它们的组合永远组不起来 → 6/7 REJECT 的结构性原因）。改用历史的"成组累加、全部保留、不回退"。
+- 起点 = v500（v31 + rebal 基线）。每步**成组叠加、全保留**，续训上一步（cpt=上一步 version），无论单步结果如何都保留：
+  1. **A1 (=v36)** `train_CERN_chain_a1.yaml`（lv530, cpt=500）：+B2(b2_cut 0.5) + source head。**已提交 job 10318006 → version_530**。
+  2. **A2 (=v37, lv531, cpt=530)**：+class2加权3.0 + chain_lca_loss(hinge) + b2_cut 0.7。
+  3. **A3 (=v38, lv534, cpt=531)**：class2加权2.0 + b2_cut 0.85 + chain_lca_ce。（lv532/533 已给 v511+mass / 公开combo 用）
+  4. **A4 (=v47, lv535, cpt=534)**：+mass head（log10）。
+- 目的：与贪心消融链对照，验证"成组累加能否建立协同、逐步逼近 v47"。
+
+### 3. v38 + track 级自注意力（attention 试验）— ✅ 纯内容版 + 完整版(edge-bias) 均完成
 - 动机：DFEI 官方续篇(2504.21844)未用 attention；想验证"事件级上下文"能否缓解 class0 稀释/隔离问题（见 PPT Part 4 讨论 + ParT/MLPF 文献调研）。
 - 实现（方案2 纯内容版）：`wmpgnn/model/attention.py` `TrackSelfAttention` — GN blocks 后、decoder 前，同事件多头自注意力（`tracks.batch` 掩码隔离跨事件），残差+LayerNorm，dim16/heads4，`DFEI.node_attention` 开关；旧 ckpt 经 load_state_dict 放松加载（新参数随机初始化）。
 - 冒烟测试抓到 2 个真 bug（掩码维度、输出 reshape 转置错位）已修；功能性验证（事件内一致/跨事件隔离）+ cpt=38 加载通过。
 - config `train_CERN_v38_attn.yaml`：cpt=38（v38 best）+ attention，20ep/200files，log_version 510。
 - **坑（2026-09-03 已修）**：从 v38 input_config 派生配置时带入了其残留 `resume_ckpt`(v37 ep90) → 与 max_epochs=20 冲突崩溃；已删除（教训：派生配置必须清 run 专属键）。
-- 对照：跑完 vs v38 基线（thr0.9 Perfect 29.26%）即干净 before/after；有效则下一步给注意力加 tt 边特征 bias（ParT 完全体）。
+- **纯内容版结果（v510，thr0.9）**：All **52.34** / Perfect **29.94**，vs v38 基线（Perfect 29.26）**+0.68pp Perfect / +1.7pp AllParticles** → 注意力机制正向，值得升级到边 bias 完全体。
+- **完整版（2026-09-04，job 10250638 → version_511）**：给注意力加 tt 边特征作 bias（ParT 式 P-MHA）。实现：`attention.py` 新增 `edge_dim` 参数 + forward 接受 `edge_index/edge_feat`（边特征 MLP→每头 1 logit，`index_put_ accumulate` 散入注意力分数，无边的 pair 仍靠纯内容）；`model.py` 接线（init 读 `node_attention_edge_bias`，forward 从 `('tracks','to','tracks')` 取 encoder 级 edges——GN blocks 不更新 `.edges`，维数 16 与 `edge_dim` 一致）。
+- config `train_CERN_v38_attn_full.yaml`：与 v510 同协议（cpt=38 + 20ep/200files/thr0.9），唯一增量 = `node_attention_edge_bias: true`，log_version 511 → 干净 before/after（对照 v510）。
+- 完整版冒烟（2026-09-04）又抓 1 个真 bug：edge-bias scatter 的 `index_put_` 不能吃 `slice(None)`（需全 tensor 索引）→ 改按 head 循环 scatter；修复后事件内一致/跨事件隔离/边 bias 生效/cpt=38+edge_bias(4,16) 加载全部通过。
+- **完整版结果（v511，job 10262916 完成）**：All **53.66** / Perfect **30.90** —— vs v510 纯内容 **+0.96pp Perfect / +1.32pp AllParticles**，vs v38 基线 +1.64/+3.1。class1 召回升到 78.27%，1B/2B Perfect 同步上升。**tt 边特征 bias（ParT 完全体）确认有效** → 下一步可把 attention 引入消融链终点/与升维叠加。
+- **v47+attention（2026-09-07，job 10281386 → version_515）**：容量线收束后，把已验证的 attention（edge-bias）叠到当前最强栈 v47 (32.7/55.9) 上，探针能否突破。config `train_CERN_v47_attn.yaml` = v47 栈（含 mass head/source head）+ `node_attention_edge_bias`，cpt=47 + 20ep/thr0.9，log_version 515；结构不变 → 仅 attention 新层随机、主干全继承（冒烟 ALL PASS）。对照 v47。
+- **v47+attention 结果（v515 完成）**：All **53.76** / Perfect **31.60** —— **低于 v47 基线**（-1.1 Perfect / -2.1 All），且 v515 (31.6/53.8) ≈ v511 (30.9/53.7)。结论：**attention 与 mass head 增益不同源、不叠加**——20ep 内 attention 在 v47 已固化能力上扰动 mass head 优势。当前最佳仍 v47 (32.7/55.9)；attention 的价值锚定 v38 栈 (v511 干净 +1.64)。若想试 attention/mass 共存需更长预算（v515 续训 50ep+）。
+- **机制分析（2026-09-08，文献调研）**：v515 现象 = 顺序微调中的 catastrophic interference（LoRA/冻结主干系列文献：全参顺序微调会覆盖先前能力；v515≈v511 证明微调重写起点表征）。**非维度瓶颈**（升维三败 + 加少量参数就增益 → 瓶颈在监督组织而非容量）。文献还提示 ParT 家族中 local MP + attention 需一体化设计（PHAT-JeT）、交互表征维度才是关键（MIParT）。
+- **两条对策线（2026-09-08 已提交）**：
+  - ① v515 续训诊断（job 10290295 → version_516）：resume v515 ep19 续 60ep，区分"20ep 预算不足 vs 机制冲突"。
+  - ② v38 世代长训（job 10290296 → version_517，over_write v48_gen）：世代法——v47 栈 (mass head) + attention(edge-bias) 但从 **cpt=38** 出发（两新头随机），150ep 长训协同（v46→v47 已验证的"世代吸收新头"路径）。墙钟截断后人工 resume 续。
+- **监督头世代吸收（2026-09-08 提交）**：v48 失败 (v38_structhead) 与 v515 同型 = 往 v47 固化态 resume 短训 (17ep) + 多头同加 → 干扰。世代法世代1：`train_CERN_v47_struct_gen.yaml`（job 10290310 → version_518）= v47 best + **仅 struct head**（保留 mass/source），epochs 180（resume ep113 续 67ep，对照 v48 的 17ep）。接受判据 > v47 (32.7/55.9) → 世代2 +mom；否则收束。mom 世代模板待 struct 结果后建（resume 自 version_518 best）。
+  - **v520 结果（2026-09-11 完成，v518 续训跑满 179ep）**：All **53.70** / Perfect **31.35** —— **< v47 (55.9/32.7)**，且与 v518(ep131: 54.02/31.41) 基本持平（长训无进一步增益，已饱和）。LCAG 反升（class1 78.32/class2 52.15/class3 55.77）但重建下降 → **分类与重建脱节、struct 头对重建净负**。判读：**struct 世代收束，未超 v47，不加 mom 世代**。结论：往 v47 固化态加 struct head，无论短训(v48) 还是世代长训(v520) 都超不过 v47（与 v516 后插 attention 无效同型）。
+- **世代早停修正 + resume（2026-09-09）**：v517/v518 上一段并非墙钟截断，而是 **EarlyStopping(patience=15, val_combined_loss) 提前掐断**——v517 best ep04(35.567) 后 15ep 无刷新 → ep19 停（预算150 只跑20）；v518 best ep116(35.800) 后 15ep 无刷新 → ep131 停（预算180 只续18）。故世代法"长训吸收"未真正完成。
+  - 修复：`exec_lightning.py` 的 EarlyStopping patience 改为读 `settings.early_stop_patience`（默认15；**0=禁用**），两个世代 config 均设 `early_stop_patience: 0` 跑满预算。
+  - **resume 已提交（2026-09-09）**：v517→`train_CERN_v38_gen_attnmass_resume.yaml`（job 10297649 → version_519，resume 自 version_517 ep19 续至150）；v518→`train_CERN_v47_struct_gen_resume.yaml`（job 10297650 → version_520，resume 自 version_518 ep131 续至180）。两者 early_stop_patience: 0。
+- 注：坏卡池已见多张坏 UUID（e2ac1338/4d72a0dc/5d195d15），新 job 常被拦截需反复重提。
 
 ### 链脚本共坑（均已在脚本内修复）
-- 作业内 env 常 >64KB，`hep_sub` 自重提交会报 env-too-big → 重提前白名单清环境（`strip_env`）。
-- GPU 分配不稳（坏的 2080Ti/L20 都可能被塞）→ 全部带 PREFLIGHT matmul 预检 + 失败自动重排（sleep 60-120s 后 `hep_sub` 自重启，计入 retry_count 防死循环）。
+- **CSVLogger 动态字段崩溃（2026-09-09，ab05 首次踩，version_504）**：训练中断，`ValueError: dict contains fields not in fieldnames: 'train_LCA_*' ...`。根因方向：`dfei_lightning_module.on_train/on_validation_epoch_end` 均遍历 `self.log` 以 `train_/val_` 前缀重写 CSV header；当字段集合随训练变化（ab05 为唯一**单开 `chain_lca_ce`、关闭 `chain_lca_loss`** 的配置，其它 job 均双开链 loss）时 header 被锁定为 val 子集，后续新增 train_* 字段 → 崩溃。**规避**：链相关 loss 务必**双开**（`chain_lca_ce:true` + `chain_lca_loss:true`，与 v47/v511/v517 一致），勿单独开 ce。教训：config 里若只开某一链 loss，首 epoch 的 CSV re-write 可能崩；`train_CERN_ab05_ce.yaml` 已恢复双开并重提。注：该崩溃与优化本身无关。
+- **作业内自重提交不可靠（2026-09-07 定论）**：GPU 作业 env 常 >64KB，而 hep_sub 组解析需要的变量（_CONDOR_*/HepJob_SiteName/BATCH_SYSTEM 等）恰是 env 体积主力 → trim_env 删它们报 "No resource serving for group 'ghigh'"，保留则 env-too-big；且调度器会静默丢弃作业内重提。**结论：不要在 GPU 作业内 hep_sub 自重提交**。消融链主脚本已改为"只执行一步"；但 CPU watchdog（`ablation_watchdog.sh`）也**不被调度**（ghigh CPU-only 作业排队数天 idle，与 3 个老 watchdog_eval 同理）→ 实际由人工在交互侧按步提交（可靠）。
+- **坏卡自动重提（2026-09-08 修正）**：之前"作业内自重提交不可靠"的根因其实是**提交者 shell env 被污染变大**（>64KB）。从干净终端提交的作业 env 小（~16KB），作业内 hep_sub 自重提交完全可靠（submit_eval.sh 一直如此且有效）。训练脚本 [submit_train_cern_one.sh] 已升级为 submit_eval 同款：PREFLIGHT 快速失败 + 无限自动重提 (sleep 60) + 运行时 CUDA/OOM 错误重试 + 可选 `-wn` 指定节点。消融链 PREFLIGHT 分支同样改回自动重排。watchdog 弃用。坏卡池多张 (e2ac1338/4d72a0dc/5d195d15)，全池分配命中坏卡概率高但自动重试会自愈；强制 -wn 指定节点排队慢，默认不指定。

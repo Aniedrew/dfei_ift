@@ -1,0 +1,58 @@
+digraph ablation {
+  rankdir=TB; bgcolor="white"; splines=true;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12, margin="0.14,0.08", penwidth=1.2, color="#9aa0a6"];
+  edge [color="#777777", arrowsize=0.7, penwidth=1.3, fontname="Helvetica", fontsize=10, fontcolor="#444444"];
+  labelloc="t";
+  label="分图 3 · 方法论对照：贪心消融链（单个加 · 不升即回退） vs 累加保留链（成组加 · 全保留） vs 联合实验\n修正口径重排后：旧“6/7 REJECT”作废 —— 【链内边类别 CE】稳健有效(+1.23)、【结构头】再叠小幅正(+0.49，噪声边缘)；累加链 A1 无收益(A2–A4 未跑)\n数字 = PerfectReco / AllParticles（修正口径：固定分母 N_total=17561, thr0.9）";
+  fontsize=20; fontcolor="#202124";
+
+  v31 [label="v31  基线 (+rebal 起点)", fillcolor="#DCEBFF"];
+  v31 -> v500 [label="从头 (消融起点)"];
+
+  subgraph cluster_greedy {
+    label="贪心消融链：从 v500 基线逐个加一项，All 非降才保留、否则回退"; style="rounded"; color="#7a44aa"; penwidth=1.6; fontsize=12; fontcolor="#4a2b73";
+    v500 [label="v500  ab01 loss 再平衡   ✓ ACCEPT 基线\n17.90 / 33.34", fillcolor="#E9DDFF", color="#7a44aa", penwidth=2.2];
+    v501 [label="ab02  +【B2 可微剪枝 cut0.85】✗\n· 17.72 / 32.70  (−0.64pp)", fillcolor="#FBE4E4"];
+    v502 [label="ab03  +【class2 加权 2.0】~\n· 18.01 / 33.27 (−0.07pp)", fillcolor="#F3ECFF"];
+    v503 [label="ab04  +【链内一致性 hinge】✗\n· 17.74 / 32.78  (纯 hinge 恒0退化)", fillcolor="#FBE4E4"];
+    v504 [label="ab05  +【链内边类别 CE】   ✓ ACCEPT\n· 19.13 / 33.69  (+1.23)  → 新基线", fillcolor="#DCC9FF", color="#7a44aa", penwidth=2.2];
+    v505 [label="ab06  +【源检测头】~ · 19.13/33.58 (−0.11)", fillcolor="#F3ECFF"];
+    v506 [label="ab07  +【质量头】~ · 19.23/33.20 (−0.49 All, +0.10 Perf)", fillcolor="#F3ECFF"];
+    v507 [label="ab08  +【结构头 w0.3】✓ 链内最好\n· 19.62 / 34.02  (+0.49 Perf, 噪声边缘)", fillcolor="#DCC9FF", color="#7a44aa", penwidth=2.0];
+    v508 [label="ab09  +【动量头 w0.2】· 跑中", fillcolor="#F3ECFF"];
+    v509 [label="ab00  空微调对照 (不加任何优化)\n· 17.98/33.27 ≈ v500 → 零漂移 → 支持“起点已固化”", fillcolor="#FFF2C4"];
+  }
+
+  subgraph cluster_accum {
+    label="累加保留链：从 v500 成组加、全保留、不回退"; style="rounded"; color="#aa8800"; penwidth=1.6; fontsize=12; fontcolor="#7a5c00";
+    v530 [label="v530  A1 = CERN v36 配方\n· v500 + 【B2 cut0.5 + 源检测头】\n· 17.71 / 32.58  → 无收益 (−0.76pp All)", fillcolor="#EDF6B8"];
+    v531 [label="v531  A2 = CERN v37 配方 (未建未跑)\n· +【class2 w3.0 + 链 hinge + cut0.7】", fillcolor="#F5F0F0"];
+    v534 [label="v534  A3 = v38 配方 (未建未跑)", fillcolor="#F5F0F0"];
+  }
+
+  subgraph cluster_new {
+    label="2026-09-13 新实验：联合 + 固化探针 (判据一律固定分母)"; style="rounded"; color="#0b7285"; penwidth=1.6; fontsize=12; fontcolor="#0b4f5c";
+    v549 [label="v549  联合 = v507(链CE+结构) + 【质量头 + 动量头】\n· cpt507 · 20ep · 跑中 → 测“多方法联合 > 单项之和?”", fillcolor="#CDEEF3", color="#0b7285", penwidth=2.0];
+    v550 [label="v550  固化探针 lr 1e-4 (3.3x)\n· cpt507 原位续 20ep · 跑中", fillcolor="#CDEEF3"];
+    v551 [label="v551  固化探针 lr 3e-4 (10x)\n· cpt507 原位续 20ep · 跑中", fillcolor="#CDEEF3"];
+  }
+
+  orc [shape=note, style=filled, fillcolor="#E0F4F7", color="#0b7285", fontsize=11, label="Oracle 上限实验 (v47 推理侧, 固定分母 17561)\nAll% ≈ P(链在点剪枝后存活) × P(存活链被还原)  —— 两轴可分离\n· v47 基线                 → 链存活 70.8% × 条件还原 55.9% = 39.56\n· 点: 补回全部真值径迹     → 95.3% × 56.7% = 54.09  (+14.5pp, 最便宜杠杆)\n· 边: 用真值               → 71.1% × 100%  = 71.10\n· 点+边都用真值            → 100%  × 99.8% = 99.75\n⇒ 但点 precision 同样致命: nodeoff(留全部径迹) 只有 2219 → 非线性开关\n⇒ 且点剪枝头 loss 权重=1, 边=硬编码 33×, rebal 键是死键 → 点 recall 被严重欠训"];
+
+  v521 [label="v521  组合验证 (对照贪心)  已停\n· v500 + 【B2 + class2w + 链CE】打包\n· 150ep 关早停 → best ckpt 已落盘", fillcolor="#FFF2C4"];
+
+  v500 -> v501 [label="20ep", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v500 -> v502 [label="20ep", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v500 -> v503 [label="20ep", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v500 -> v504 [label="20ep  ✓", color="#7a44aa", penwidth=2.0];
+  v504 -> v505 [label="20ep", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v504 -> v506 [label="20ep", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v504 -> v507 [label="20ep  ✓", color="#7a44aa", penwidth=2.0]; v504 -> v508 [label="20ep 跑中"];
+  v507 -> v549 [label="20ep 联合", color="#0b7285", penwidth=1.8]; v507 -> v550 [label="20ep"]; v507 -> v551 [label="20ep"];
+  v500 -> v509 [label="20ep 对照"];
+  v500 -> v521 [label="打包 150ep (已停)"];
+  v500 -> v530 [label="cpt500"];
+  v530 -> v531 [label="(未跑)", color="#9e9e9e", style=dashed]; v531 -> v534 [label="(未跑)", color="#9e9e9e", style=dashed];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", color="#E0A800", fontsize=11, label="已排除代码 bug (误判排查)\n· cpt 加载生效：各 ab 的 ep0 权重与 v500 best 的 RMS 差 = 0.001\n· 新增项确有梯度：source_loss=0.034、mass=0.049、chaince=0.72\n· 修正口径重排后结论: 【chain-CE】稳健有效 (+1.23 Perf, v504); 【结构头】再叠小幅正 (+0.49, 噪声边缘, v507)\n  ; 其余 (B2/cl2w/hinge/源/质量) 均在噪声内 → 旧“6/7 REJECT”是可变分母假象\n· 空微调对照 v509 零漂移 → 支持“收敛点已固化”, 故新增 lr 探针 v550/v551 做区分"];
+}

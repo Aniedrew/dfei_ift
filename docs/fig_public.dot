@@ -1,0 +1,46 @@
+digraph public {
+  rankdir=TB; bgcolor="white"; splines=true;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12, margin="0.14,0.08", penwidth=1.2, color="#9aa0a6"];
+  edge [color="#777777", arrowsize=0.7, penwidth=1.3, fontname="Helvetica", fontsize=10, fontcolor="#444444"];
+  labelloc="t";
+  label="分图 4 · 公开数据线（无 PID） + 已弃支系（PV 分簇 / 结构扩展）\n关键结论：公开数据用【简单栈】修正口径 22.76%，而 v38【全栈】只有 8.06% —— CERN 调优的栈对公开数据是负贡献\n新进展：从 v27 起逐层复现 (P1=v60 已超 v27: 23.43/54.52)，P2=v61 跑中；数字 = PerfectReco / AllParticles（本数据集固定分母 N_total=12774, 10000 事件, thr0.9）";
+  fontsize=20; fontcolor="#202124";
+
+  subgraph cluster_public {
+    label="公开数据线 (无 PID; class2/3 边数比 CERN 多 4-14x)"; style="rounded"; color="#2e8b57"; penwidth=1.6; fontsize=13; fontcolor="#1b5e34";
+    v23 [label="v23  public paper 复现\n· 原始流程 · Perfect 19.8%*", fillcolor="#D7F2DC"];
+    v27 [label="v27  ★公开【简单栈】 (≈CERN v31)\n· 无 B2/链loss/监督头 · 修 class-weight bug\n· 温和 lr · Perfect 22.76 / All 51.66", fillcolor="#B7E5C6", color="#2e8b57", penwidth=2.2];
+    v60 [label="v60  复现 P1 (=CERN v36) ✓ 完成\n· v27 +【B2 cut0.5 + 源检测头】\n· 23.43 / 54.52  (+0.67 / +2.86 vs v27)", fillcolor="#B7E5C6", color="#2e8b57", penwidth=2.0];
+    v61 [label="v61  复现 P2 (=CERN v37) 跑中\n· +【class2 w3.0 + 链 hinge + cut0.7】", fillcolor="#E4F6E8"];
+    v533 [label="v533  公开组合验证 (跑中)\n· v27 +【B2 + class2w + 链CE】", fillcolor="#E4F6E8"];
+    v45 [label="v45  公开 v38【全栈】(从头)\n· 8.06 / 19.70  (远低于简单栈 22.76!)", fillcolor="#FADCDC"];
+    v49 [label="v49  公开续训 (v45ep66)✗\n· 5.95 / 14.15  (续训反而退化)", fillcolor="#F5C6C6"];
+  }
+
+  subgraph cluster_pv {
+    label="已弃 · PV 分簇线（训练侧切子图伤模型）"; style="rounded,dashed"; color="#bdbdbd"; fontsize=12; fontcolor="#616161";
+    v39 [label="v39  truth 硬切分簇", fillcolor="#ECECEC"];
+    v40 [label="v40  可训练 cluster 头✗\n· val 发散 (35.9→84.9→114…)", fillcolor="#ECECEC"];
+    v41 [label="v41  课程过渡 + val 对齐✗\n· val 不降 · 3.2h/epoch", fillcolor="#ECECEC"];
+    v42 [label="v42  小规模快速验证✗\n· 26.28* (伤模型, class1 掉 20pp)", fillcolor="#ECECEC"];
+    pvn [shape=note, style=filled, fillcolor="#F5F5F5", color="#bdbdbd", fontsize=10, label="结论: 训练侧切子图与测试全图前向不一致, 全图能力退化;\n推理侧分簇修正口径 20.72 vs v38 21.10 (thr0.9, CERN) → 确属真差, 非分母假象 → 路线整体关闭"];
+  }
+
+  subgraph cluster_struct {
+    label="已弃 · 结构扩展（升维 / 加宽）"; style="rounded,dashed"; color="#bdbdbd"; fontsize=12; fontcolor="#616161";
+    v53 [label="v53  升维 tracks32 / tt边24 (从头)✗\n· 未收敛 (修正口径 15.84 / 26.78)", fillcolor="#ECECEC"];
+    v512 [label="v512  升维 32/24 (从 v38)✗\n· 13.34 / 24.03 (灾难性干扰)", fillcolor="#FADCDC"];
+    v513 [label="v513  GN 宽度 128→256 (batch8)✗ · ep12 OOM", fillcolor="#F5F0F0"];
+    v514 [label="v514  wide (batch6 补完)✗ · 15.35 / 25.44, 不如 v38", fillcolor="#FADCDC"];
+    stn [shape=note, style=filled, fillcolor="#F5F5F5", color="#bdbdbd", fontsize=10, label="结论: 三种容量扩展 (v53/v512/v514) 全部劣于 v38\n→ 瓶颈不在容量, 在结构与监督组织"];
+  }
+
+  v23 -> v27 [label="cpt23 (温和 lr)"];
+  v27 -> v60 [label="cpt27"];
+  v60 -> v61 [label="cpt60"];
+  v27 -> v533 [label="cpt27"];
+  v45 -> v49 [label="ep66 续训", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v39 -> v40 -> v41 -> v42 [color="#9e9e9e"];
+  v512 -> v513 [label="加宽版", color="#9e9e9e"];
+  v513 -> v514 [label="batch6 补完", color="#9e9e9e"];
+}

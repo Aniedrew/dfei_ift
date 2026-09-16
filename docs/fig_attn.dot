@@ -1,0 +1,45 @@
+digraph attn {
+  rankdir=TB; bgcolor="white"; splines=true;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12, margin="0.14,0.08", penwidth=1.2, color="#9aa0a6"];
+  edge [color="#777777", arrowsize=0.7, penwidth=1.3, fontname="Helvetica", fontsize=10, fontcolor="#444444"];
+  labelloc="t";
+  label="分图 2 · 突破尝试：attention 线 + 往最优“固化态”后插监督头\n核心对照：同一优化从 v38(未固化) 起有效，从 v47(固化最优) 起无效\n数字 = PerfectReco / AllParticles（修正口径：固定分母 N_total=17561, thr0.9）";
+  fontsize=20; fontcolor="#202124";
+
+  v38 [label="v38   (21.10 / 37.59)\n未固化、可塑的“前身”", fillcolor="#BBD9FF", penwidth=2.0];
+  v47 [label="v47   (23.15 / 39.56)\n强固化最优态", fillcolor="#FFD84D", color="#E0A800", penwidth=3.0];
+
+  subgraph cluster_ok {
+    label="从 v38 起 → ✅ 有效"; style="rounded"; color="#2e8b57"; penwidth=1.6; fontsize=13; fontcolor="#1b5e34";
+    v510 [label="v510  track 自注意力(纯内容)\n· v38 cpt · 20ep · 21.75 / 38.01", fillcolor="#D7F2DC"];
+    v511 [label="v511  ★自注意力 + tt 边特征 bias (ParT 式)\n· v38 cpt · 20ep\n· 22.11 / 38.39  (+1.01 / +0.80)", fillcolor="#B7E5C6", color="#2e8b57", penwidth=2.2];
+    v517 [label="v517  v38 +【自注意力 + 质量头】\n· cpt=v38 · 目标 150ep (世代协同)\n· 22.00 / 38.12", fillcolor="#D7F2DC"];
+    v519 [label="v519  v517 续至 ~72ep (已停 2026-09-13)\n· best val 35.96 > v47(35.68) → 未超 v47\n· best ckpt 已落盘, 可离线补评", fillcolor="#FFF2C4"];
+    v532 [label="v532  v511(22.11) + 【质量头】\n· cpt=v511 · 150ep (突破候选, 仍跑中)\n· best val 35.95 > v47(35.68)", fillcolor="#FFE08A"];
+  }
+
+  subgraph cluster_frozen {
+    label="从 v47 固化态后插 → ❌ 全部失败"; style="rounded"; color="#c0392b"; penwidth=1.6; fontsize=13; fontcolor="#8a2b1a";
+    v515 [label="v515  v47 +【自注意力(edge-bias)】\n· 20ep · 22.95 / 39.04", fillcolor="#FADCDC"];
+    v516 [label="v516  v515 续训 60ep\n· 22.72 / 38.95  (< v47 23.15)", fillcolor="#F5C6C6"];
+    v50 [label="v50  v47 + 仅质量头 (小口径对照) · 29.67*", fillcolor="#FFF2C4"];
+    v51 [label="v51  v47 +【动量头】 · 30.46*", fillcolor="#FFF2C4"];
+    v52 [label="v52  v47 +【结构头】 · 30.46*", fillcolor="#FFF2C4"];
+    v518 [label="v518  v47 +【结构头 struct】\n· cpt=v47 ep113 · 目标 180ep\n· 22.52 / 38.73", fillcolor="#FFF2C4"];
+    v520 [label="v520  v518 续满 179ep\n· 22.69 / 38.87  (< v47 23.15)\n· 长训 66ep 零改善 → 固化不可逆", fillcolor="#F5C6C6"];
+  }
+
+  v38 -> v510 [label="cpt38 · 20ep"];
+  v38 -> v511 [label="cpt38 · 20ep\n+1.01/+0.80"];
+  v38 -> v517 [label="cpt38 · 150ep"];
+  v517 -> v519 [label="v517ep19 续\nbest val 35.548 ✅"];
+  v511 -> v532 [label="cpt511 · 150ep"];
+
+  v47 -> v515 [label="20ep", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v515 -> v516 [label="续60ep (<v47)", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v47 -> v50 [color="#d9534f", style=dashed]; v47 -> v51 [color="#d9534f", style=dashed]; v47 -> v52 [color="#d9534f", style=dashed];
+  v47 -> v518 [label="ep113 续", color="#d9534f", style=dashed, fontcolor="#a03020"];
+  v518 -> v520 [label="续179ep (<v47)", color="#d9534f", style=dashed, fontcolor="#a03020"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", color="#E0A800", fontsize=11, label="机理 (文献: 灾难性遗忘 / 表征固化)\n往收敛最优 v47 后插新组件 → 第一 epoch val 即跳变(+3.3)、\n此后长训无法恢复; 而 v38 系仍可塑, 加 attention 立得 +1.01。\n(数字已改用固定分母口径) * = 小口径不可比\n\n固化直接证据 (2026-09-13):\n· v509 空微调(v500+20ep, 零改动) = 17.98/33.27 ≈ v500 17.90/33.34 → 零漂移\n· 待验证: lr 探针 v550(1e-4) / v551(3e-4) vs v507, 区分“真固化” vs “步长太小”"];
+}

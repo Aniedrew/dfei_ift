@@ -1,0 +1,35 @@
+digraph mainline {
+  rankdir=TB; bgcolor="white"; splines=true;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12, margin="0.15,0.09", penwidth=1.2, color="#9aa0a6"];
+  edge [color="#5c85c0", arrowsize=0.7, penwidth=1.4, fontname="Helvetica", fontsize=10, fontcolor="#2a4d75"];
+  labelloc="t";
+  label="分图 1 · CERN 主线：v31 → v47（逐层累加的成功路径）\n每步 = 上一代 best 续训 + 一组新优化；数字 = PerfectReco / AllParticles（修正口径：固定分母 N_total=17561, thr0.9）";
+  fontsize=20; fontcolor="#202124";
+
+  v31 [label="v31  基线\n· 修 class-weight bug (LCA__weights→LCA_weights)\n· 从头 lr1e-3 / 100ep · best ep56\nPerfect 12.30 / All 22.49", fillcolor="#DCEBFF"];
+  v32 [label="v32  微调\n· lr 1e-3→1e-4, 150ep · best ep61", fillcolor="#DCEBFF"];
+  v34 [label="v34  微调 (失败, 被 v35 取代)✗", fillcolor="#FADCDC"];
+  v35 [label="v35  微调 (重跑成功)\n· v32ep61 续 · best ep68", fillcolor="#DCEBFF"];
+
+  v36 [label="v36  +B2 可微剪枝 + 源检测头\n· 【B2】软掩码 w_eff=w·σ((w−cut)/τ), cut0.5\n· 【源检测头】监督 GNN 找链根 (RC)\n· v35ep68 续 → best ep79\nPerfect 18.77 / All 35.17  (+0.64pp)", fillcolor="#CFE3FF"];
+  v37 [label="v37  +class2 加权 + 链 hinge + 更狠剪枝\n· 【class2(姐妹边)加权 3.0】\n· 【链内一致性 hinge】(方案5, margin0.3)\n· 【B2 cut 0.5→0.7】\n· v36ep79 续 → best ep90\nPerfect 19.50 / All 36.21  (+0.73pp)", fillcolor="#CFE3FF"];
+  v38 [label="v38  456 改良版\n· 【class2 加权 → 2.0】\n· 【B2 cut → 0.85】(对齐推理 thr0.9)\n· 【链内边类别 CE (chain_lca_ce)】(方案6)\n· v37ep90 续 → best ep101\nPerfect 21.10 / All 37.59  (+1.60pp)\n(方案6 chain_lca_ce 才是有效的链一致性项)", fillcolor="#BBD9FF", penwidth=2.0];
+
+  v46 [label="v46  +质量头 v1\n· 【ππ 不变质量回归】目标未归一化\n· v38 续 · best ep106\nPerfect 21.28 / All 38.22", fillcolor="#EAF3FF"];
+  v47 [label="v47  ★★ 当前最优\n· v38 + 【质量头 masshead2 改良】\n· log10 归一化目标 + 掩码修复\n· v38 续 · best ep113\nPerfect 23.15 / All 39.56  (+2.05pp)\n(PhyIP 探针: 边表征质量 R² 0.003→0.93)", fillcolor="#FFD84D", color="#E0A800", penwidth=3.0];
+  v48 [label="v48  三头同加 (质量+结构+动量) ~\n· Perfect 21.40 / All 37.36  vs v38 21.10 / 37.59\n· 实为“打平”(差0.23pp, 噪声内) → 旧“All 50.6% 下降”是可变分母假象", fillcolor="#FFEFC2"];
+
+  v31 -> v32 [label="v31ep56 续 · lr→1e-4\n→ best ep61"];
+  v32 -> v34 [label="v32ep61 续 (失败)", color="#d9534f", style=dashed];
+  v32 -> v35 [label="v32ep61 续\n→ best ep68"];
+  v35 -> v36 [label="v35ep68 续\n+0.64pp"];
+  v36 -> v37 [label="v36ep79 续\n+0.73pp"];
+  v37 -> v38 [label="v37ep90 续\n+1.60pp"];
+  v38 -> v46 [label="+质量头 v1\nbest ep106 · +0.18pp"];
+  v38 -> v47 [label="+质量头 masshead2\nbest ep113 · +2.05pp ★", penwidth=2.2, color="#E0A800", fontcolor="#7a5c00"];
+  v38 -> v48 [label="三头同加 (失败)", color="#d9534f", style=dashed];
+
+  { rank=same; v32; v34; }
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", color="#E0A800", fontsize=11, label="主线规律\nv31→v47 全程逐层累加、每步保留：\nB2 + 源头 (v36) → class2加权 + 链hinge + cut (v37)\n→ class2调整 + cut0.85 + 链类别CE (v38) → 质量头 (v47)\n修正口径重排 (见分图 3)：逐项拆开只有【链CE】稳健、【结构头】小幅正，其余在噪声内；\n成组累加链 A1 亦无收益 (A2–A4 未跑) → “协同”尚未被证实，联合实验 v549 正在测\n(数字已改用固定分母口径, 旧可变分母值不可比)"];
+}
