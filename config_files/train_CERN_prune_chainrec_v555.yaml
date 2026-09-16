@@ -1,0 +1,208 @@
+# DFEI 剪枝优化 (2026-09-13) — lv555, cpt=38(v38 best, 未固化), 20ep
+# 背景: oracle 显示 点 recall 是最大杠杆 (补回真值径迹 All 39.56->54.09);
+#       且 combined_loss 里 点权重=1 / 边=33(硬编码), 配置里的 node/lca 权重过去是死键。
+# 本 arm: {'node_prune_weight': 1.0, 'lca_weight': 1.0, 'chain_recall_weight': 1.0}
+DFEI:
+  GNblocks:
+    MLP_forward:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm: None
+    MLP_infer:
+      dropout: 0.01
+      layers:
+      - -1
+      - 16
+      - 16
+      - 16
+      - 1
+      norm: None
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+    b2_tau_start: 1.0
+    nBlocks: 4
+    use_edge_weights: true
+    use_globals: true
+    use_node_weights: true
+    weighted_pass: true
+  cpt: 38
+  decoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    usage: true
+  edge_types:
+  - tracks_tracks
+  - tracks_pvs
+  encoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    usage: true
+  node_types:
+  - tracks
+  - pvs
+  op_trafo:
+    MLP:
+      dropout: 0.01
+      layers:
+      - -1
+      - -1
+      norm: None
+    global: None
+    pv: None
+    tr: None
+    tr_pv: None
+    tr_tr: 4
+    usage: true
+  use_pid: 'true'
+evaluate:
+  nfiles:
+  - 20
+  over_write: prune_chainrec
+  sample:
+  - inclusive_00342442
+inference:
+  LCA: true
+  LCA_weights: true
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  chain_lca_conf_thr: 0.3
+  chain_lca_filter: false
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  chain_recall_weight: 1.0
+  edge_prune: true
+  edge_prune_thr: 0.9
+  edge_prune_weights: true
+  lca_class2_weight: 2.0
+  lca_weight: 1.0
+  node_prune: true
+  node_prune_thr: 0.9
+  node_prune_weight: 1.0
+  node_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  source_head: true
+  source_loss_weight: 5.0
+settings:
+  batch_size: 8
+  calibration: false
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
+  epochs: 20
+  gacc: 2
+  graph_mode: None
+  log_version: 555
+  lr: 3e-5
+  ncpu: 2
+  nfiles:
+  - 200
+  ngpu: 1
+  node_sel: 'true'
+  precision: 32
+  pv_model: None
+  sample:
+  - inclusive_00342442
+  weight_decay: 1e-5

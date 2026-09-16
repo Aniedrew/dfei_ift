@@ -1,0 +1,33 @@
+settings:
+  # Data directory for test data - 新CERN标准化MC数据
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  model_arch: "DFEI"
+  model: 47
+  ngpu: 1
+  ncpu: 4
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  # ==== 无剪枝 (阈值取负 -> 权重恒 > 阈值 -> 全保留) ====
+  # 目的: 在完整图上做真值解码, 得到测试集"真值 B 链总数" N_total,
+  #       作为固定分母, 用于把所有历史指标换算成统一口径。
+  edge_prune_thr: -1.0
+  node_prune_thr: -1.0
+
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "noprune"

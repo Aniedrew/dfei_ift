@@ -1,0 +1,33 @@
+# 顺序泄漏检验 · 置换 2（seed 222）
+# 与 perm1 同配置、只换置换 seed。
+# 用途: 给出"置换本身带来的噪声带" |perm1 - perm2|；
+#       只有 |base - perm| 明显大于这条噪声带，才能说顺序起了作用。
+settings:
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  model_arch: "DFEI"
+  model: 557
+  ngpu: 1
+  ncpu: 4
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  permute_graph_order: true
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v557_perm2"
+  permute_seed: 222

@@ -18,7 +18,9 @@ settings:
   log_version: 505
 inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
   edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
-  edge_prune_thr: 0.9, node_prune_thr: 0.9, source_head: true, source_loss_weight: 5.0}
+  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_ce: true, chain_lca_ce_weight: 1.0,
+  chain_lca_loss: true, chain_lca_loss_weight: 2.0, chain_lca_margin: 0.3, chain_lca_filter: false,
+  source_head: true, source_loss_weight: 5.0}
 evaluate:
   sample: [inclusive_00342442]
   nfiles: [20]

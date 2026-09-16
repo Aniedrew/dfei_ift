@@ -1,4 +1,7 @@
-# DFEI 逐项消融链 — 503: Part2: 链内 LCA 一致性 hinge (保持置信, margin 0.3)
+# DFEI 联合实验 — 549: v507(chain-CE + struct) 之上再叠 mass head + mom head
+# 动机: ab 链"逐项"只到 v507(chain-CE+struct, 修正口径 34.02/19.62, 链内最好);
+#       本实验把剩余两个弱正项(mass 19.23 / mom)成组叠上去, 看"多方法联合"能否>单项之和。
+# 起点 = v507 best (cpt=507); 20ep/lr3e-5, 与 ab 链各步协议一致(便于对照)。
 settings:
   data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
   sample: [inclusive_00342442]
@@ -15,15 +18,18 @@ settings:
   node_sel: 'true'
   pv_model: None
   calibration: false
-  log_version: 503
+  log_version: 549
 inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
   edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
-  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_loss: true, chain_lca_loss_weight: 2.0,
-  chain_lca_margin: 0.3, chain_lca_filter: false}
+  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_ce: true, chain_lca_ce_weight: 1.0,
+  chain_lca_loss: true, chain_lca_loss_weight: 2.0, chain_lca_margin: 0.3, chain_lca_filter: false,
+  struct_head: true, struct_head_weight: 0.3,
+  mass_head: true, mass_head_edge_dim: 16, mass_loss_weight: 1.0,
+  mom_head: true, mom_head_node_dim: 16, mom_loss_weight: 0.2}
 evaluate:
   sample: [inclusive_00342442]
   nfiles: [20]
-  over_write: ab04_hinge
+  over_write: join_v507_massmom
 DFEI:
   GNblocks:
     MLP_forward:
@@ -97,4 +103,4 @@ DFEI:
     tr_tr: 4
     usage: true
   use_pid: 'true'
-  cpt: 500
+  cpt: 507

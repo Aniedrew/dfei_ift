@@ -1,4 +1,13 @@
-# DFEI 逐项消融链 — 503: Part2: 链内 LCA 一致性 hinge (保持置信, margin 0.3)
+# DFEI 组合验证 — 521: 把"单独无效但历史组合有效"的机制项打包组合验证.
+# 依据 (2026-09-09 对比) —— B2 / class2加权 / chain_lca_ce 在 v36→v37→v38→v47 整栈里均有效
+#   (v31 23.93 → v36 +B2+source 26.28 → v37 +cl2w+chaince 27.25 → v38 +cl2w2.0+cut0.85 29.26 → v47 32.7),
+#   但消融链单独测全部 REJECT (ab02 B2 −1.56pp / ab03 cl2w2.0 −0.55pp / ab04 纯 hinge 恒0退化).
+# 本步: 在 v500 基线 (cpt=500, 裸 rebal 栈) 上把 B2 + class2加权 + chain_lca_ce 三项
+#   "机制/loss 级"改动组合起来 —— 均不新增网络层, 与 v500 结构兼容、加载无冲突.
+#   长训 150ep (early_stop_patience 0, 关早停) 排除"预算不足", 直接看协同.
+# 判读: 组合 > v500 (47.58/25.55) → 证明协同; 能到 v38 水平 → 组合即可复现;
+#   仍 ≈v500 → 说明这些项需 source/mass 头协同, 下一步再叠加头 (世代式).
+# 注意: 本 config 不启动 source/mass/struct/mom 头 (保持变量干净, 单看三项机制).
 settings:
   data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
   sample: [inclusive_00342442]
@@ -7,7 +16,7 @@ settings:
   batch_size: 8
   lr: 3.0e-05
   weight_decay: 1.0e-05
-  epochs: 20
+  epochs: 150
   gacc: 2
   ngpu: 1
   ncpu: 2
@@ -15,15 +24,17 @@ settings:
   node_sel: 'true'
   pv_model: None
   calibration: false
-  log_version: 503
+  log_version: 521
+  early_stop_patience: 0  # 组合长训跑满 150ep, 禁用 val_combined_loss 早停
 inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
   edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
-  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_loss: true, chain_lca_loss_weight: 2.0,
+  edge_prune_thr: 0.9, node_prune_thr: 0.9, lca_class2_weight: 2.0, chain_lca_ce: true,
+  chain_lca_ce_weight: 1.0, chain_lca_loss: true, chain_lca_loss_weight: 2.0,
   chain_lca_margin: 0.3, chain_lca_filter: false}
 evaluate:
   sample: [inclusive_00342442]
   nfiles: [20]
-  over_write: ab04_hinge
+  over_write: v500_combo
 DFEI:
   GNblocks:
     MLP_forward:
@@ -35,6 +46,12 @@ DFEI:
       layers: [-1, 16, 16, 16, 1]
       norm: None
     nBlocks: 4
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
     use_edge_weights: true
     use_globals: true
     use_node_weights: true

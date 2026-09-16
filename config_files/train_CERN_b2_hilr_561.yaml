@@ -1,0 +1,197 @@
+# DFEI 下一批 (2026-09-13/14) — lv561  cpt=500  lr=0.0003  20ep
+# 依据: 固化假说被证伪 (v551: 同 20ep, lr 3e-5->3e-4 = +5.9pp All);
+#       oracle: 点头 P/R 各值 ~15pp -> 点头是最大瓶颈。
+# 本 arm: B: v500 + B2 @高lr (重测 ab02 的 REJECT 是否 lr 假象)
+DFEI:
+  GNblocks:
+    MLP_forward:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm: None
+    MLP_infer:
+      dropout: 0.01
+      layers:
+      - -1
+      - 16
+      - 16
+      - 16
+      - 1
+      norm: None
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 1
+    b2_tau_start: 0.1
+    nBlocks: 4
+    use_edge_weights: true
+    use_globals: true
+    use_node_weights: true
+    weighted_pass: true
+  cpt: 500
+  decoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    usage: true
+  edge_types:
+  - tracks_tracks
+  - tracks_pvs
+  encoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    usage: true
+  node_types:
+  - tracks
+  - pvs
+  op_trafo:
+    MLP:
+      dropout: 0.01
+      layers:
+      - -1
+      - -1
+      norm: None
+    global: None
+    pv: None
+    tr: None
+    tr_pv: None
+    tr_tr: 4
+    usage: true
+  use_pid: 'true'
+evaluate:
+  nfiles:
+  - 20
+  over_write: b2_hilr
+  sample:
+  - inclusive_00342442
+inference:
+  LCA: true
+  LCA_weights: true
+  edge_prune: true
+  edge_prune_thr: 0.9
+  edge_prune_weights: true
+  lca_weight: 1.0
+  node_prune: true
+  node_prune_thr: 0.9
+  node_prune_weight: 1.0
+  node_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+settings:
+  batch_size: 8
+  calibration: false
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
+  epochs: 20
+  gacc: 2
+  graph_mode: None
+  log_version: 561
+  lr: 0.0003
+  ncpu: 2
+  nfiles:
+  - 200
+  ngpu: 1
+  node_sel: 'true'
+  precision: 32
+  pv_model: None
+  sample:
+  - inclusive_00342442
+  weight_decay: 1.0e-05

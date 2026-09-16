@@ -1,4 +1,5 @@
 # DFEI 逐项消融链 — 504: Part2: 链内边"类别正确" CE (y>0 结构边直接监督)
+# 基线 = v500 (ab01 rebal, 已 ACCEPT)。ab02/03/04 均 REJECT (回退 v500), 本步从 cpt=500 出发 +chain_lca_ce。
 settings:
   data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
   sample: [inclusive_00342442]
@@ -18,7 +19,8 @@ settings:
   log_version: 504
 inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
   edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
-  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_ce: true, chain_lca_ce_weight: 1.0}
+  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_ce: true, chain_lca_ce_weight: 1.0,
+  chain_lca_loss: true, chain_lca_loss_weight: 2.0, chain_lca_margin: 0.3, chain_lca_filter: false}
 evaluate:
   sample: [inclusive_00342442]
   nfiles: [20]
@@ -96,4 +98,4 @@ DFEI:
     tr_tr: 4
     usage: true
   use_pid: 'true'
-  cpt: 503
+  cpt: 500

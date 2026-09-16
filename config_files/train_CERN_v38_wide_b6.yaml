@@ -1,19 +1,16 @@
 settings:
-  # 不对称 latent 扩展: tracks 节点 32 维 / tt 边 24 维 (其余 16)
-  # 物理自由度分析: 节点承载 ~12-14 自由度 + 多监督头竞争, 16 贴下限; 边 ~7-9
-  # 基于 v38 算法栈 + mass head (struct/mom 等消融结果出来后再叠加)
-  # ===== 续训版 =====
-  # 上次作业反复被墙钟限制在 ~ep74 截断 (metrics: 0-74, 未到 150)。
-  # 本配置从最新 epoch checkpoint 续训, 由 submit_train_cern_v53_resume.sh
-  # 每段结束后把 resume_ckpt 自动更新为最新 checkpoint 并链式重提交, 直至 150。
+  # v38 栈 + GN 中间宽度 128→256 (轻量容量测试) — batch6 续训版
+  # v513 (batch8) 在 ep12 中段 CUDA OOM (10.57GB 卡, 参数 1.6M 峰值超限) — 训练健康
+  #   (ep0-11 完成, val 39.07 仍在降)。本配置 batch 8→6 (峰值显存 -25%) 续训补齐 20ep。
+  # resume 自 version_513 epoch_epoch=11 (PL 续计数到 epochs=20, 剩 9ep)。
   data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
   sample: [ "inclusive_00342442" ]
   nfiles: [ 200 ]
   precision: 32
-  batch_size: 8
+  batch_size: 6
   lr: 3e-5
   weight_decay: 1e-5
-  epochs: 150
+  epochs: 20
   gacc: 2
   ngpu: 1
   ncpu: 2
@@ -21,10 +18,8 @@ settings:
   node_sel: "true"
   pv_model: "None"
   calibration: False
-  # 固定续训目录 (version_54 已含 ep75-112 的续训段); resume_ckpt 由提交脚本每段改写
-  log_version: 54
-  # 续训起点: 提交脚本每次运行前自动改写为 version_54 里最新的 epoch_epoch=*.ckpt
-  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_54/checkpoints/epoch_epoch=135.ckpt"
+  log_version: 514
+  resume_ckpt: "/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/LHCb_logs/DFEI/version_513/checkpoints/epoch_epoch=11.ckpt"
 
 inference:
   LCA: true
@@ -46,19 +41,15 @@ inference:
   chain_lca_ce: true
   chain_lca_ce_weight: 1.0
   source_head: true
-  source_head_node_dim: 32   # 节点表征 32 维
+  source_head_node_dim: 16
   source_loss_weight: 5.0
   chain_lca_filter: false
   chain_lca_conf_thr: 0.3
-  # ==== 第7个监督头: mass head (边表征 24 维) ====
-  mass_head: true
-  mass_head_edge_dim: 24
-  mass_loss_weight: 1.0
 
 evaluate:
   sample: [ "inclusive_00342442" ]
   nfiles: [ 20 ]
-  over_write: "v38_asym_mass_final"
+  over_write: "v38_wide"
 
 DFEI:
   use_pid: "true"
@@ -68,9 +59,9 @@ DFEI:
   encoder:
     usage: true
     global: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
-    tracks: { layers: [ -1, 128, 128, 32 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }  # 节点 32
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
     pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
-    tracks_tracks: { layers: [ -1, 128, 128, 24 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }  # tt 边 24
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
     tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
   GNblocks:
     nBlocks: 4
@@ -78,9 +69,7 @@ DFEI:
     use_node_weights: true
     use_edge_weights: true
     weighted_pass: true
-    MLP_forward: { layers: [ -1, 128, 128, 16 ], norm: "None", dropout: 0.01 }
-    # 不对称: tracks 节点 32, tt 边 24; 其余类型默认 16
-    MLP_forward_dim: { tracks: 32, tracks_tracks: 24 }
+    MLP_forward: { layers: [ -1, 256, 256, 16 ], norm: "None", dropout: 0.01 }  # 128→256
     MLP_infer: { layers: [ -1, 16, 16, 16, 1 ], norm: "None", dropout: 0.01 }
     b2: true
     b2_cut: 0.85
@@ -91,9 +80,9 @@ DFEI:
   decoder:
     usage: True
     global: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
-    tracks: { layers: [ -1, 128, 128, 32 ], norm: [ "None", "None" ], dropout: 0.01 }  # 节点 32
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
     pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
-    tracks_tracks: { layers: [ -1, 128, 128, 24 ], norm: [ "None", "None" ], dropout: 0.01 }  # tt 边 24
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
     tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
   op_trafo:
     usage: true

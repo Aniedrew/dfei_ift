@@ -1,0 +1,220 @@
+# v38 世代长训 (世代法): attention(edge-bias) + mass head 从同一代协同学习.
+# 背景: v515 (往已固化的 v47+mass 态后插 attention, 20ep 全参微调) < v47 —— 顺序微调覆盖
+#   已学能力 (文献: catastrophic forgetting / conflicting gradients)。而 v46→v47 证明本项目
+#   里新头以"世代"方式加入 (从 v38 出发, 新头随机 + 长训吸收) 是成功路径。
+# 本配置 = v47 栈 (mass head/source head) + attention(edge-bias), 但起点 cpt=38 (v38 best):
+#   mass head 与 attention 均为新随机层, 与主干一起长训 150ep (第一段; 墙钟截断后人工 resume 续)。
+# log_version 517, over_write v48_gen.
+settings:
+  batch_size: 8
+  calibration: false
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
+  epochs: 150
+  gacc: 2
+  graph_mode: None
+  lr: 3e-5
+  ncpu: 2
+  nfiles:
+  - 200
+  ngpu: 1
+  node_sel: 'true'
+  precision: 32
+  pv_model: None
+  sample:
+  - inclusive_00342442
+  weight_decay: 1e-5
+  log_version: 517
+  early_stop_patience: 0  # 世代长训跑满 150ep 预算, 禁用 val_combined_loss 早停
+
+inference:
+  LCA: true
+  LCA_weights: true
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  chain_lca_conf_thr: 0.3
+  chain_lca_filter: false
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  edge_prune: true
+  edge_prune_thr: 0.9
+  edge_prune_weights: true
+  lca_class2_weight: 2.0
+  lca_weight: 10.0
+  mass_head: true
+  mass_head_edge_dim: 16
+  mass_loss_weight: 1.0
+  node_prune: true
+  node_prune_thr: 0.9
+  node_prune_weight: 10.0
+  node_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  source_head: true
+  source_loss_weight: 5.0
+
+evaluate:
+  nfiles:
+  - 20
+  over_write: v48_gen
+  sample:
+  - inclusive_00342442
+
+DFEI:
+  GNblocks:
+    MLP_forward:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm: None
+    MLP_infer:
+      dropout: 0.01
+      layers:
+      - -1
+      - 16
+      - 16
+      - 16
+      - 1
+      norm: None
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+    b2_tau_start: 1.0
+    nBlocks: 4
+    use_edge_weights: true
+    use_globals: true
+    use_node_weights: true
+    weighted_pass: true
+  cpt: 38
+  decoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    usage: true
+  edge_types:
+  - tracks_tracks
+  - tracks_pvs
+  encoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    usage: true
+  node_types:
+  - tracks
+  - pvs
+  op_trafo:
+    MLP:
+      dropout: 0.01
+      layers:
+      - -1
+      - -1
+      norm: None
+    global: None
+    pv: None
+    tr: None
+    tr_pv: None
+    tr_tr: 4
+    usage: true
+  use_pid: 'true'
+  node_attention: true
+  node_attention_heads: 4
+  node_attention_edge_bias: true

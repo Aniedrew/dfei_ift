@@ -1,0 +1,219 @@
+# 方案A 上下文感知剪枝头 消融档: ctxattn (log_version=542)
+# 基底 = v38 栈 (cpt=38, 未固化); 协议同 v510/v511 (20ep/200files/lr3e-5)
+# 唯一增量 = GNblocks.context_prune (见下)
+    # mode: off|mean|attn|attn_topk; gamma 初始 0 -> 起始严格等价对照
+# v38 + track 级自注意力"完整版" (ParT 式 tt 边特征作注意力 bias).
+# 与纯内容版 (train_CERN_v38_attn.yaml, v510: All 52.34/Perfect 29.94) 同协议:
+# 从 v38 best 加载, 20ep 微调, 唯一增量 = node_attention_edge_bias.
+# 边特征取 encoder 级 tracks_tracks 输出 (GN blocks 不更新 .edges, 维数与 edge_dim 一致)
+DFEI:
+  GNblocks:
+    MLP_forward:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm: None
+    MLP_infer:
+      dropout: 0.01
+      layers:
+      - -1
+      - 16
+      - 16
+      - 16
+      - 1
+      norm: None
+    b2: true
+    b2_cut: 0.85
+    b2_k: 0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 100
+    b2_tau_start: 1.0
+    context_prune:
+      mode: attn
+      heads: 4
+      hidden: 32
+      dropout: 0.0
+    nBlocks: 4
+    use_edge_weights: true
+    use_globals: true
+    use_node_weights: true
+    weighted_pass: true
+  cpt: 38
+  decoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    usage: true
+  edge_types:
+  - tracks_tracks
+  - tracks_pvs
+  encoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    usage: true
+  node_types:
+  - tracks
+  - pvs
+  op_trafo:
+    MLP:
+      dropout: 0.01
+      layers:
+      - -1
+      - -1
+      norm: None
+    global: None
+    pv: None
+    tr: None
+    tr_pv: None
+    tr_tr: 4
+    usage: true
+  use_pid: 'true'
+  node_attention: true
+  node_attention_heads: 4
+  node_attention_edge_bias: true
+evaluate:
+  nfiles:
+  - 20
+  over_write: v38_attn_full
+  sample:
+  - inclusive_00342442
+inference:
+  LCA: true
+  LCA_weights: true
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  chain_lca_conf_thr: 0.3
+  chain_lca_filter: false
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  edge_prune: true
+  edge_prune_thr: 0.9
+  edge_prune_weights: true
+  lca_class2_weight: 2.0
+  lca_weight: 10.0
+  node_prune: true
+  node_prune_thr: 0.9
+  node_prune_weight: 10.0
+  node_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  source_head: true
+  source_loss_weight: 5.0
+settings:
+  batch_size: 8
+  calibration: false
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
+  epochs: 20
+  gacc: 2
+  graph_mode: None
+  lr: 3.0e-05
+  ncpu: 2
+  nfiles:
+  - 200
+  ngpu: 1
+  node_sel: 'true'
+  precision: 32
+  pv_model: None
+  sample:
+  - inclusive_00342442
+  weight_decay: 1e-5
+  log_version: 546

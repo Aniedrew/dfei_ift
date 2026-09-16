@@ -1,4 +1,7 @@
-# DFEI 逐项消融链 — 503: Part2: 链内 LCA 一致性 hinge (保持置信, margin 0.3)
+# DFEI 累加保留链 — A1 (= CERN v36): + B2(b2_cut 0.5) + source head
+# 与"贪心消融链"不同: 本链每步成组叠加、全部保留、不做单项回退 (严格复刻 v31→v47 的累加路径).
+# 起点 = v500 (v31 + rebal, ACCEPT 基线)。A1 成组加 v36 配方: B2 + 源检测头.
+# 后续 A2(=v37)/A3(=v38)/A4(=v47) 依次续训本链上一步, 无论单步结果如何都保留.
 settings:
   data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
   sample: [inclusive_00342442]
@@ -15,15 +18,15 @@ settings:
   node_sel: 'true'
   pv_model: None
   calibration: false
-  log_version: 503
+  log_version: 530
 inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
   edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
-  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_loss: true, chain_lca_loss_weight: 2.0,
-  chain_lca_margin: 0.3, chain_lca_filter: false}
+  edge_prune_thr: 0.9, node_prune_thr: 0.9,
+  source_head: true, source_loss_weight: 5.0}
 evaluate:
   sample: [inclusive_00342442]
   nfiles: [20]
-  over_write: ab04_hinge
+  over_write: chain_a1
 DFEI:
   GNblocks:
     MLP_forward:
@@ -39,6 +42,13 @@ DFEI:
     use_globals: true
     use_node_weights: true
     weighted_pass: true
+    # ==== CERN v36: B2 可微剪枝 (cut 0.5) ====
+    b2: true
+    b2_cut: 0.5
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 20
   decoder:
     global:
       dropout: 0.01

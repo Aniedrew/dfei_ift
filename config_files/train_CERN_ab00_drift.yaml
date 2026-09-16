@@ -1,4 +1,7 @@
-# DFEI 逐项消融链 — 503: Part2: 链内 LCA 一致性 hinge (保持置信, margin 0.3)
+# DFEI 消融链 — 空微调对照 (drift control): v500 基线 + 不加任何优化 + 20ep
+# 目的: 量化"从已收敛基线出发、20ep 同口径微调"的系统性漂移。
+#   若本对照也从 47.58 掉到 ~46, 说明各 abNN 的"−0.4~−1.9"里掺了漂移成本,
+#   单步消融会低估真实增益(判定 REJECT 不可靠)。与 ab01-ab08 同口径(20ep/lr3e-5/batch8/gacc2/20文件评估).
 settings:
   data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
   sample: [inclusive_00342442]
@@ -15,15 +18,14 @@ settings:
   node_sel: 'true'
   pv_model: None
   calibration: false
-  log_version: 503
+  log_version: 509
 inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
   edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
-  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_loss: true, chain_lca_loss_weight: 2.0,
-  chain_lca_margin: 0.3, chain_lca_filter: false}
+  edge_prune_thr: 0.9, node_prune_thr: 0.9}
 evaluate:
   sample: [inclusive_00342442]
   nfiles: [20]
-  over_write: ab04_hinge
+  over_write: ab00_drift
 DFEI:
   GNblocks:
     MLP_forward:

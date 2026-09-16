@@ -1,11 +1,15 @@
-# DFEI 逐项消融链 — 503: Part2: 链内 LCA 一致性 hinge (保持置信, margin 0.3)
+# DFEI 固化探针 B — 551: v507 原位续训 20ep, lr 提到 3e-4 (10x, 上限端)
+# 与 550(lr1e-4) 组成 lr 阶梯 {3e-5(v509 已证零漂移), 1e-4(550), 3e-4(551)}。
+# 判读: 若 551 仍 ≈ v507(34.02/19.62) 且 val 不降 -> 真固化;
+#       若明显更差 -> 当前点"尖锐", 高 lr 破坏已学解, 需温和探索而非大步;
+#       若更好 -> 此前 REJECT 是 lr 太小, 不是固化。
 settings:
   data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
   sample: [inclusive_00342442]
   nfiles: [200]
   precision: 32
   batch_size: 8
-  lr: 3.0e-05
+  lr: 3.0e-04
   weight_decay: 1.0e-05
   epochs: 20
   gacc: 2
@@ -15,15 +19,16 @@ settings:
   node_sel: 'true'
   pv_model: None
   calibration: false
-  log_version: 503
+  log_version: 551
 inference: {LCA: true, LCA_weights: true, node_prune: true, node_prune_weights: true,
   edge_prune: true, edge_prune_weights: true, pv_asso: true, pv_asso_weights: true,
-  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_loss: true, chain_lca_loss_weight: 2.0,
-  chain_lca_margin: 0.3, chain_lca_filter: false}
+  edge_prune_thr: 0.9, node_prune_thr: 0.9, chain_lca_ce: true, chain_lca_ce_weight: 1.0,
+  chain_lca_loss: true, chain_lca_loss_weight: 2.0, chain_lca_margin: 0.3, chain_lca_filter: false,
+  struct_head: true, struct_head_weight: 0.3}
 evaluate:
   sample: [inclusive_00342442]
   nfiles: [20]
-  over_write: ab04_hinge
+  over_write: lrprobe_v507_lr3e4
 DFEI:
   GNblocks:
     MLP_forward:
@@ -97,4 +102,4 @@ DFEI:
     tr_tr: 4
     usage: true
   use_pid: 'true'
-  cpt: 500
+  cpt: 507

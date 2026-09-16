@@ -1,0 +1,92 @@
+# 公开数据复现 — 严格按 CERN v31→v47 顺序, step2 (= CERN v37): + class2 加权3.0 + chain_lca_loss + b2_cut 0.7
+# 基线 = P1 (version_60, 修正口径 Perf 23.43 / All 54.52, 相比 v27 +2.86pp All)。
+# 公开数据复现 — 严格按 CERN v31→v47 顺序, step1 (= CERN v36): B2(cut0.5) + source head
+# 公开起点 = version_27 (简单栈 + 修class weight, 当前口径 Perfect 41.48, 等价 CERN v31 基线).
+# CERN v36 = resume v35 + B2(b2_cut 0.5) + 源检测头(RC训练化), lr 5e-5.
+# 本步: cpt=27 加载简单栈权重 + 加 b2(0.5) + source_head, 公开数据续训 40ep.
+# 注: 公开数据无 PID (use_pid None), 其余与 CERN v36 配方对齐.
+settings:
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_data/converted_LHCbcollision"
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 50 ]
+  precision: 32
+  batch_size: 1
+  lr: 5e-5
+  weight_decay: 1e-5
+  epochs: 40
+  gacc: 16
+  ngpu: 1
+  ncpu: 2
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+  log_version: 61
+  early_stop_patience: 0  # 复现链跑满预算, 关早停
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  node_prune_weight: 10.0
+  lca_weight: 10.0
+  # ==== CERN v36: 源检测头 (第6头, RC 训练化) ====
+  source_head: true
+  source_loss_weight: 5.0
+  # ==== CERN v37: 方案4/5 (class2 加权 + chain_lca_loss) ====
+  lca_class2_weight: 3.0
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+evaluate:
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 50 ]
+  over_write: "public_p2_v37"
+DFEI:
+  use_pid: "None"
+  cpt: 60  # 加载 P1 (version_60) 的 best 权重
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward: { layers: [ -1, 128, 128, 16 ], norm: "None", dropout: 0.01 }
+    MLP_infer: { layers: [ -1, 16, 16, 16, 1 ], norm: "None", dropout: 0.01 }
+    # ==== CERN v36: B2 可微剪枝 (cut 0.5) ====
+    b2: true
+    b2_cut: 0.7
+    b2_k: 0
+    b2_tau_start: 1.0
+    b2_tau_end: 0.1
+    b2_tau_epochs: 40
+  decoder:
+    usage: True
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP: { layers: [ -1, -1 ], norm: "None", dropout: 0.01 }

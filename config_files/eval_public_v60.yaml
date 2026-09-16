@@ -1,0 +1,67 @@
+# 公开复现 P1 (v60) 专用评估: 训练已于 2026-09-12 12:06 完成(40/40ep), 原 job 因评估阶段坏卡陷入重试链(会重训)故改专用评估。
+# 口径: thr0.9 / 50 文件 / 固定分母 N_total_public=12774
+# 公开数据复现：先用当前口径(thr0.9·50文件·LCAG)重新评估 version_27(简单栈最佳ckpt)
+# v27 = 公开数据 简单栈 + 修class weight bug + 温和 lr 6.25e-5 (cpt=23 续训), 旧口径曾 38.26/92.30.
+# 目的: 拿当前口径真实 Perfect/All, 判断能否直接作复现地基(免重训), 否则按 v27 配方重训.
+settings:
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_data/converted_LHCbcollision"
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 50 ]  # 50 个 tst 文件
+  model_arch: "DFEI"
+  model: 60  # 公开数据简单栈 (version_27), 自动加载 val 最小的 best ckpt
+  ngpu: 1
+  ncpu: 4
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+evaluate:
+  sample: [ "00342442_inclusive" ]
+  nfiles: [ 50 ]
+  over_write: "v60_public"
+DFEI:
+  use_pid: "None"
+  cpt: 27  # version number, 会被 settings.model 覆盖
+  node_types: [ 'tracks', 'pvs' ]
+  edge_types: [ "tracks_tracks", "tracks_pvs" ]
+  encoder:
+    usage: true
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "graph_norm", "None" ], dropout: 0.01 }
+  GNblocks:
+    nBlocks: 4
+    use_globals: true
+    use_node_weights: true
+    use_edge_weights: true
+    weighted_pass: true
+    MLP_forward: { layers: [ -1, 128, 128, 16 ], norm: "None", dropout: 0.01 }
+    MLP_infer: { layers: [ -1, 16, 16, 16, 1 ], norm: "None", dropout: 0.01 }
+  decoder:
+    usage: True
+    global: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks_tracks: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+    tracks_pvs: { layers: [ -1, 128, 128, 16 ], norm: [ "None", "None" ], dropout: 0.01 }
+  op_trafo:
+    usage: true
+    tr_tr: 4
+    tr_pv: None
+    tr: None
+    pv: None
+    global: None
+    MLP: { layers: [ -1, -1 ], norm: "None", dropout: 0.01 }
