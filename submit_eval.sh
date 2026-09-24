@@ -46,13 +46,38 @@ retry_or_exit() {
     echo "[RETRY] 第 $N/$MAX_RETRY 次, ${RETRY_SLEEP}s 后重排..."
     sleep $RETRY_SLEEP
     echo "[RETRY] 重新提交 submit_eval.sh $CONFIG_FILE ${NODE} (原作业 ${_CONDOR_IHEP_JOB_ID:-unknown}, GPU ${CUDA_VISIBLE_DEVICES})"
-    ARGU_ARGS=(-argu ${CONFIG_FILE})
-    [ -n "$NODE" ] && ARGU_ARGS+=(${NODE})
-    WN_ARGS=()
-    [ -n "$NODE" ] && WN_ARGS=(-wn $NODE)
     # 清掉父作业继承的 GPU 绑定, 否则重提会被"钉"回同一张坏卡 (死循环)
     unset CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES
-    hep_sub submit_eval.sh "${ARGU_ARGS[@]}" -g ghigh -gpu 1 -cpu 4 -m 32000 -wt mid -o logs/eval_${CONFIG_FILE%.yaml}.out -e logs/eval_${CONFIG_FILE%.yaml}.err "${WN_ARGS[@]}"
+    # 用 env -i 起一个干净登录 shell 再提交。自重排会把环境变量逐代累积,
+    # 约 200 代后越过 64KB 上限, hep_sub 直接拒绝:
+    #   ERROR: The total size of your environment variables exceeds the
+    #   system's 64KB limit (currently 65748 bytes)
+    # 这条错误发生在重提瞬间, 重排链就此静默断掉 (2026-09-17 踩到:
+    # 6 条链在 181-216 代之间集体阵亡, 队列变空)。干净登录 shell 只有 ~2.3KB。
+    RESUB=$(mktemp /tmp/resub_eval_XXXXXX.sh)
+    {
+      echo '#!/bin/bash'
+      printf 'cd %q || exit 1\n' "$PWD"
+      printf 'exec hep_sub submit_eval.sh -argu %q' "$CONFIG_FILE"
+      [ -n "$NODE" ] && printf ' %q' "$NODE"
+      printf ' -g ghigh -gpu 1 -cpu 4 -m 32000 -wt mid -o %q -e %q' \
+        "logs/eval_${CONFIG_FILE%.yaml}.out" "logs/eval_${CONFIG_FILE%.yaml}.err"
+      [ -n "$NODE" ] && printf ' -wn %q' "$NODE"
+      echo
+    } > "$RESUB"
+    env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" SHELL=/bin/bash TERM=dumb /bin/bash -l "$RESUB"
+    RC_SUB=$?
+    rm -f "$RESUB"
+    [ "$RC_SUB" -ne 0 ] && {
+      echo "[RETRY] ⚠️ 重提失败 (rc=$RC_SUB), 重排链已断"
+      curl -s --connect-timeout 10 -X POST https://sctapi.ftqq.com/SCT387631TDiuLj6UNUsFTaDRjkaSWcdPv.send \
+        -d "title=[DFEI] ⚠️ 评估 ${CONFIG_FILE} 重排链断了" \
+        -d "desp=## hep_sub 重提失败 (rc=$RC_SUB), 该作业不会再自动重排
+| 配置 | ${CONFIG_FILE} |
+| 原作业 | ${_CONDOR_IHEP_JOB_ID:-unknown} |
+| 第几次 | ${N}/${MAX_RETRY} |
+| 主机 | $(hostname) |" > /dev/null 2>&1
+    }
     echo "[RETRY] 已重提, 本次退出"
     exit 0
   fi

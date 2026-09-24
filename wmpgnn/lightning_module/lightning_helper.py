@@ -66,6 +66,19 @@ def init_logs(configs, mode="train"):
         if loss_config.get("chain_recall_edge_weight", 0.0):
             log["chain_recall_edge_loss"] = []
 
+        # 边头 pairwise ranking 损失日志 (2026-09-22, v614)
+        if loss_config.get("edge_rank_weight", 0.0):
+            log["edge_rank_loss"] = []
+
+        # 剪枝 MLP 方向头 (2026-09-23, v618/v619): 损失 + 准确率
+        if loss_config.get("dir_head_weight", 0.0):
+            log["dir_loss"] = []
+            log["dir_acc_loss"] = []
+
+        # 节点侧 pairwise ranking (2026-09-23, v622)
+        if loss_config.get("node_rank_weight", 0.0):
+            log["node_rank_loss"] = []
+
         # 方案7b: 可训练 PV 分簇头 (pv_cluster_head) loss 日志
         if loss_config.get("pv_cluster", False):
             log["pv_cluster_loss"] = []

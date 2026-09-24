@@ -1,0 +1,36 @@
+# armA_0702 · v557 · thr 0.1 (复现组里给的 yaml: edge/node_prune_thr=0.1)
+settings:
+  data_dir: /lzufs/home/guoqingxiang/dfei/eval_arms/A_0702/MC_normed
+  sample:
+  - inclusive_BsToJpsiPhi_00342629
+  nfiles:
+  - 10
+  model_arch: DFEI
+  model: 557
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.1
+  node_prune_thr: 0.1
+  optimize_thr: false
+  plt_nodes: true
+  plt_edges: true
+  plt_pvs: true
+evaluate:
+  sample:
+  - inclusive_BsToJpsiPhi_00342629
+  nfiles:
+  - 10
+  over_write: armA_0702_thr01

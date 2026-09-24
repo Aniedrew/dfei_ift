@@ -51,9 +51,19 @@ class HeteroGraphNetwork(pl.LightningModule):
         # Inference layers
         self._node_mlps = {}
         self._edge_mlps = {}
+        self.edge_dir_logits = {}
+        self._dir_head_edges = set()
+        # ==== [2026-09-23] 剪枝 MLP 的第二输出: 方向头 ====
+        # MLP_infer_dir_head=true 时, tt 边的剪枝 MLP 多一个输出, 预测"sender 是否更靠上游"。
+        # 只对 ('tracks','to','tracks') 生效; 其余边/节点 MLP 完全不变。
+        self._dir_head_on = bool(config.get("MLP_infer_dir_head", False))
         if config["use_node_weights"]:
             for edge_type in edge_types:
-                self._edge_mlps[edge_type] = create_mlp(config["MLP_infer"])
+                _dir = 1 if (self._dir_head_on and edge_type == ('tracks', 'to', 'tracks')) else 0
+                self._edge_mlps[edge_type] = create_mlp(config["MLP_infer"], dir_outdim=_dir)
+                if _dir:
+                    self._dir_head_edges.add(edge_type)
+                    print(f"[dir_head] 剪枝 MLP 追加方向输出: {edge_type} (与剪枝头共享 trunk)")
 
         if config["use_edge_weights"]:
             self._node_mlps['tracks'] = create_mlp(config["MLP_infer"])
@@ -108,6 +118,29 @@ class HeteroGraphNetwork(pl.LightningModule):
                 else self._mlp_forward["layers"][-1]
             self._context_head = ContextPruneHead(node_dim, edge_dim, cp_cfg)
 
+        # ==== [2026-09-23] 剪枝 MLP 的派生输入: 零初始化残差适配器 ====
+        # 由 lightning module 从原始特征现算物理派生量 (pT/|p|/minIP/隔离度/ΔR/m(ππ)/…),
+        # 挂到 graph 的 x_der / der_edges 上; 这里用 x' = x + W·der 注入。
+        # W,b 初始化为 0 -> **起点与旧模型逐位等价**(不破坏已继承的剪枝头与主干),
+        # 模型只在派生量确有增益时才学出非零映射。
+        self._node_der_adapter = None
+        self._edge_der_adapter = None
+        _kn = int(config.get("extra_node_dim", 0))
+        _ke = int(config.get("extra_edge_dim", 0))
+        if _kn > 0:
+            self._node_der_adapter = torch.nn.Linear(_kn, node_configs["tracks"]["layers"][-1])
+            torch.nn.init.zeros_(self._node_der_adapter.weight)
+            torch.nn.init.zeros_(self._node_der_adapter.bias)
+            print(f"[der_input] 节点剪枝 MLP 追加 {_kn} 维派生输入 (零初始化适配器)")
+        if _ke > 0:
+            _ekey = ('tracks', 'to', 'tracks')
+            _edim = edge_configs[_ekey]["layers"][-1] if _ekey in edge_configs \
+                else self._mlp_forward["layers"][-1]
+            self._edge_der_adapter = torch.nn.Linear(_ke, _edim)
+            torch.nn.init.zeros_(self._edge_der_adapter.weight)
+            torch.nn.init.zeros_(self._edge_der_adapter.bias)
+            print(f"[der_input] 边剪枝 MLP 追加 {_ke} 维派生输入 (零初始化适配器)")
+
     def _b2_mask(self, w):
         """B2 可微软掩码: mask = σ((w - cut) / τ), 返回与 w 同形的连续掩码 [0,1]。"""
         tau = max(float(self._b2_tau), 1e-3)
@@ -121,8 +154,15 @@ class HeteroGraphNetwork(pl.LightningModule):
         for edge_type in self.edge_types:
             if self._use_edge_weights:
                 graph_batch = node_input[edge_type[0]].batch[node_input[edge_type].edge_index[0]]
-                self.edge_logits[edge_type] = self._edge_mlps[edge_type](node_input[edge_type].edges, graph_batch)
+                _e_in = node_input[edge_type].edges
+                _de = getattr(graph[edge_type], "der_edges", None)     # 派生输入 (可选)
+                if self._edge_der_adapter is not None and _de is not None:
+                    _e_in = _e_in + self._edge_der_adapter(_de)
+                self.edge_logits[edge_type] = self._edge_mlps[edge_type](_e_in, graph_batch)
                 self.edge_weights[edge_type] = self._sigmoid(self.edge_logits[edge_type])
+                # 方向头 (剪枝 MLP 的第二输出), 只在最后一个 block 取值
+                if edge_type in self._dir_head_edges and getattr(self, "_dir_active", False):
+                    self.edge_dir_logits[edge_type] = self._edge_mlps[edge_type].dir_logits
             else:
                 self.edge_weights[edge_type] = torch.ones((graph[edge_type].edges.shape[0], 1)).to(self.device)
 
@@ -147,7 +187,11 @@ class HeteroGraphNetwork(pl.LightningModule):
         # Node infer
         for node_type in self.node_types:
             if self._use_node_weights and node_type != "pvs":
-                self.node_logits[node_type] = self._node_mlps[node_type](global_input[node_type].x,
+                _x_in = global_input[node_type].x
+                _dx = getattr(graph[node_type], "x_der", None)         # 派生输入 (可选)
+                if self._node_der_adapter is not None and _dx is not None:
+                    _x_in = _x_in + self._node_der_adapter(_dx)
+                self.node_logits[node_type] = self._node_mlps[node_type](_x_in,
                                                                          global_input[node_type].batch)
                 self.node_weights[node_type] = self._sigmoid(self.node_logits[node_type])
             else:

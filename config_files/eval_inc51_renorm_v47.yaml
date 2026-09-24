@@ -1,0 +1,33 @@
+# 0904 修复版 inclusive_00342451 的 20 个 tst 文件 (重归一化到七月 old_norm_ported)
+# 用途: 与 v601(用 0904 新归一化从头适配) 在同一批测试文件上头对头比较
+settings:
+  data_dir: /lzufs/home/guoqingxiang/dfei/eval_arms/C_inc00342451_renorm/MC_normed
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  model_arch: DFEI
+  model: 47
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+evaluate:
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  over_write: inc51_renorm

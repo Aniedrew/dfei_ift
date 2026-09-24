@@ -1,0 +1,31 @@
+# 验证"标定说"：focal γ2 版本 v554 的"负结果"是否只是阈值/标定问题
+# 依据: 13 版剪枝分析里 v554 的 thr0.9 召回只有 41.2%(对照 80.6%)，
+#       其"等效阈值"为 0.74 → 用 thr 0.74 重跑，若恢复对照水平即可确认是标定问题。
+# 对照基准: v554 官方 thr0.9 = (N=4715, All_orig 89.35, Perf_orig 54.49, All_fix 23.99)
+settings:
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  model_arch: "DFEI"
+  model: 554
+  ngpu: 1
+  ncpu: 4
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.74
+  node_prune_thr: 0.74
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v554_thr074"

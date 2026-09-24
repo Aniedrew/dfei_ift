@@ -1,0 +1,32 @@
+# 标定验证: v559 在它自己扫描出的最优阈值 thr=0.93 上的官方 20 文件 eval
+# 对照: 该版本官方 thr0.9 结果见 logs/fixed_denominator_metrics_inclusive_00342442.csv
+# 顺序泄漏检验 · 基线（不置换）
+# 目的: 用独立 eval 路径复现 version_557 训练末尾自带的 thr0.9 评估
+#       (基准: N=12903, All_orig 57.18, Perf_orig 33.13)，作为置换实验的对照。
+settings:
+  data_dir: "/lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed"
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  model_arch: "DFEI"
+  model: 559
+  ngpu: 1
+  ncpu: 4
+  graph_mode: "None"
+  node_sel: "true"
+  pv_model: "None"
+  calibration: False
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.93
+  node_prune_thr: 0.93
+evaluate:
+  sample: [ "inclusive_00342442" ]
+  nfiles: [ 20 ]
+  over_write: "v559_thr093"

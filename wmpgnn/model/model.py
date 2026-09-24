@@ -74,9 +74,22 @@ class DFEI_HGNN(pl.LightningModule):
 
     def forward(self, data):
         init_graph_pid = data['tracks'].x[:, -6:]  # charge + 5 pid, hard coded be careful
+        # ==== [2026-09-23] 剪枝 MLP 的派生输入: 先抓在手里 (encoder / block 可能重建 HeteroData) ====
+        _tt = ('tracks', 'to', 'tracks')
+        _x_der = getattr(data['tracks'], 'x_der', None)
+        _e_der = getattr(data[_tt], 'der_edges', None)
+
+        def _reattach(g):
+            if _x_der is not None and g['tracks'].x.shape[0] == _x_der.shape[0]:
+                g['tracks'].x_der = _x_der
+            if _e_der is not None and g[_tt].edges.shape[0] == _e_der.shape[0]:
+                g[_tt].der_edges = _e_der
+            return g
+
         # Latent graph
         if self.encode:
             data = self._encoder(data)
+        data = _reattach(data)
         latent = data.clone()
 
         for b, core in enumerate(self._blocks):
@@ -84,7 +97,10 @@ class DFEI_HGNN(pl.LightningModule):
             core._b2_active = b == (len(self._blocks) - 1) and bool(getattr(self, "_b2_enable", True))
             # ==== 方案 A: 上下文剪枝头也只在最后一个 block 生效 ====
             core._context_active = b == (len(self._blocks) - 1)
+            # ==== [2026-09-23] 剪枝 MLP 的方向头同样只在最后一个 block 取值 ====
+            core._dir_active = b == (len(self._blocks) - 1)
             data = core(data, init_graph_pid)
+            data = _reattach(data)      # block 可能重建 HeteroData, 派生输入需重挂
             if b < (len(self._blocks) - 1):
                 data = hetero_graph_concat(latent, data)
 

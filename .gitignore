@@ -7,3 +7,13 @@ pythia_logs/
 logs/
 # 组会报告产物 (PNG/PPTX/版本归档, 数百 MB; 生成脚本 make_*.py 仍入库)
 meeting_figs_*/
+
+# 分析产物 (二进制/大文件): 生成脚本 (*.py) 与数值表 (*.csv) 仍入库
+report_figs/**/*.npy
+report_figs/**/*.npz
+report_figs/pruning_scores/
+report_figs/pv_ppt*/
+*.pptx
+report_figs/*.png
+report_figs/prune_loss_edges_*.csv
+report_figs/pv_tracks_*.csv

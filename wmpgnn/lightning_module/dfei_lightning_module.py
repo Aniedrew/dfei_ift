@@ -111,6 +111,177 @@ def chain_recall_loss(node_logits, edge_logits, y, edge_index, n_nodes, thr=0.5,
 
 
 
+def edge_rank_loss(logits, y, edge_index, node_ev, n_neg=64, margin=1.0):
+    """边头 pairwise ranking 损失 (对准 precision/AUC, 而非被 pos_weight 主导的 BCE)。
+
+    依据 (2026-09-22 诊断, v601/0904):
+      - 在**真正的决策 population** (两端都过点剪枝 thr0.9) 上, 边头 AUC 0.868, 但 thr0.9 时
+        保留了 ~90% 的边、precision 仅 0.295 (≈ 基频) -> 阈值不动时决策退化为"全留";
+        要走到 R90 工作点 (thr≈0.996) 才有 precision 0.73。
+      - 该 population 的假阳性 76% 至少一端是背景径迹 (点剪枝漏出来的), 24% 是跨链 ——
+        两类缺的都是同一件事: **"信号样"边之间的排序能力**。
+      - 现有 BCE 的 pos_weight≈700 (完全图正类率 0.14%) 把梯度几乎全投在"把真边推高",
+        对负边之间的相对次序约束很弱 -> 排序上不去。
+    本项直接优化排序: 每事件取最难的 n_neg 条负边, 与全部真边两两配对, 罚
+        relu(margin + s_neg - s_pos)。
+    只学相对次序 => 绝对阈值会漂移, 评测阈值必须按 ROC 重扫 (本项目已有该流程)。
+
+    已排除的同族尝试: 结构先验 support(i,j)=max_k min(s_ik,s_kj) 正则 (罚"高分低支持"的负边)
+    在 v601/0904 预检 AUC=0.53 (纯噪声) —— 完全图上对 n 个候选取 max 会把信号抹平。
+    """
+    s = logits.squeeze(-1)
+    yb = (y.squeeze(-1) > 0.5)
+    ev = node_ev[edge_index[0]]                           # 每条边所属事件的 id
+    tot, cnt = None, 0
+    for e in range(int(ev.max().item()) + 1 if ev.numel() else 0):
+        m = ev == e
+        pos, neg = s[m & yb], s[m & ~yb]
+        if pos.numel() == 0 or neg.numel() == 0:
+            continue
+        if neg.numel() > n_neg:
+            neg = neg.topk(n_neg).values                     # 只跟最难的负边比
+        v = F.relu(margin + (neg.unsqueeze(0) - pos.unsqueeze(1))).mean()
+        tot = v if tot is None else tot + v
+        cnt += 1
+    return (tot / cnt) if cnt else None
+
+
+def edge_dz_pair_sign(edge_index, prob, salt=0):
+    """给每条边一个"按无向对一致"的 ±1 符号 (同一对的两个方向符号相同)。
+
+    用途: 随机化 delta_z0 的方向 (切断 0702 那种"边枚举顺序=真值相关"的泄露)。
+    实现: 稳定性哈希 (min,max) 端点 + 每步随机 salt -> 同一对必得同一符号 (与方向无关),
+    prob<1 时只按概率翻转一部分对。返回 [E] float32 的 ±1。
+    """
+    a, b = edge_index[0].long(), edge_index[1].long()
+    lo, hi = torch.minimum(a, b), torch.maximum(a, b)
+    h = (lo * 1000003 + hi * 9176 + int(salt) * 2654435761) % 2147483647
+    sgn = torch.where(h.remainder(2) == 0, 1.0, -1.0)
+    if prob < 1.0:
+        keep = torch.rand(lo.shape, device=edge_index.device) < prob
+        sgn = torch.where(keep, sgn, torch.ones_like(sgn))
+    return sgn
+
+
+def track_minip(batch):
+    """每条 track 的 minIP (用 tr-pv 边特征 log_minIP 逐 track 取最小)。
+
+    归一化是单调仿射 -> 序不变, 故直接在归一化空间取 min 即可。
+    节点无 tr-pv 边时留 +inf (不翻转其方向)。
+    """
+    tt_pv = batch[("tracks", "to", "pvs")]
+    v = tt_pv.edges.reshape(-1)
+    n = batch["tracks"].x.shape[0]
+    out = torch.full((n,), float("inf"), device=v.device, dtype=v.dtype)
+    return out.scatter_reduce(0, tt_pv.edge_index[0].long(), v, reduce="amin", include_self=True)
+
+
+def derive_pruning_features(batch, nc, ns, use_triangle=False):
+    """从**原始**节点/边特征现算剪枝 MLP 的派生输入 (不重产数据)。
+
+    动机: 剪枝 MLP 的输入只有 8 维节点特征 / 5 维边特征, 缺的正是
+      (a) IP 类信息 (只有 log_minIP 经 tr-pv 边间接进来),
+      (b) 非局部的隔离度/事件上下文 (MLP 自己算不出来),
+      (c) 物理不变量 (m(ππ)/ΔR/电荷和/规范化 pT-IP 不对称/沿合动量的纵向分离),
+      (d) 三角传递性 (i~k~j)。
+
+    节点 7 维: [pT, |p|, minIP, pT-rank, isolation, n_tracks/100, npvs/10]
+    边   7 维: [ΔR, m(ππ), |q_i+q_j|, ΔpT_canon, ΔIP_canon, iso_pair, Δz_proj_canon]
+              (+2 若 use_triangle: [三角传递 support, 局域亲和度行内 rank])
+    约定: "上游" = minIP 更小 (更贴 PV), 与 edge_dz_ip_canon 的定向一致。
+    nc/ns: 原特征名 -> 归一化 center/scale (用于反归一化, 只求量级合理)。
+    """
+    tt = ("tracks", "to", "tracks")
+    X = batch["tracks"].x
+    dev = X.device
+    def raw(name, col):
+        return X[:, col] * float(ns.get(name, 1.0)) + float(nc.get(name, 0.0))
+    px, py, pz = raw("px_reco", 0), raw("py_reco", 1), raw("pz_reco", 2)
+    xp, yp, zp = raw("xProd_reco", 3), raw("yProd_reco", 4), raw("zProd_reco", 5)
+    q = raw("Charge", 6)
+    pT = torch.sqrt(px ** 2 + py ** 2 + 1e-6)
+    pmod = torch.sqrt(px ** 2 + py ** 2 + pz ** 2 + 1e-6)
+    u = torch.stack([px, py, pz], 1) / pmod.unsqueeze(1)
+    # 逐 track 的 minIP (归一化 log_minIP 的最小值; 单调 -> 序不变)
+    tpv = batch[("tracks", "to", "pvs")]
+    ip = torch.full((X.shape[0],), float("inf"), device=dev).scatter_reduce(
+        0, tpv.edge_index[0].long(), tpv.edges.reshape(-1), reduce="amin", include_self=True)
+    fin = torch.isfinite(ip)
+    ip = torch.where(fin, ip, ip[fin].max() if bool(fin.any()) else torch.zeros((), device=dev))
+    nb = batch["tracks"].batch if "batch" in batch["tracks"] else torch.zeros(
+        X.shape[0], dtype=torch.long, device=dev)
+    n_ev = int(nb.max()) + 1
+    ntr = torch.bincount(nb, minlength=n_ev).float()
+    npv = torch.bincount(batch["pvs"].batch, minlength=n_ev).float()
+    rank = torch.zeros_like(pT)
+    iso = torch.zeros_like(pT)
+    ei = batch[tt].edge_index
+    a, b = ei[0].long(), ei[1].long()
+    n_e = ei.shape[1]
+    sup = torch.zeros(n_e, device=dev, dtype=pT.dtype)
+    rk_dR = torch.zeros(n_e, device=dev, dtype=pT.dtype)
+    rk_aff = torch.zeros(n_e, device=dev, dtype=pT.dtype)
+    cos = (u[a] * u[b]).sum(-1).clamp(-1, 1)
+    dR = torch.arccos(cos)
+    # 注意: LHCb 径迹都在束流附近 (θ≲0.3 rad), 随机两径迹的 ΔR 中位数只有 ~0.1 rad,
+    # 所以"锥隔离"必须用很小的锥角; 另外准备了**尺度无关**的 dR 事件内分位 (rank)。
+    for e in range(n_ev):                       # 逐事件稠密 (n≲200, 批内事件数 ≲200 -> 可接受)
+        mn = nb == e
+        n_n = int(mn.sum())
+        if n_n < 2:
+            continue
+        cs = u[mn] @ u[mn].t()
+        eye = torch.eye(n_n, dtype=torch.bool, device=dev)
+        pe = pT[mn]
+        iso[mn] = ((cs > 0.99875) & ~eye).float().mul(pe.unsqueeze(0)).sum(1) / pe.sum().clamp(min=1e-6)
+        order = torch.argsort(-pe)
+        r = torch.empty(n_n, device=dev, dtype=pT.dtype)
+        r[order] = torch.arange(n_n, device=dev, dtype=pT.dtype)
+        rank[mn] = r / max(1, n_n - 1)
+        me = (nb[a] == e)
+        if int(me.sum()) < 2:
+            continue
+        # 事件内 ΔR 分位: 有多大比例的(同事件)候选对比这一对更不共线 (0=最共线)
+        rk_dR[me] = (dR[me].unsqueeze(0) > dR[me].unsqueeze(1)).float().mean(1)
+        if not use_triangle:
+            continue
+        loc = torch.zeros(X.shape[0], dtype=torch.long, device=dev)   # 全局节点 id -> 事件内局部 id
+        loc[mn.nonzero(as_tuple=True)[0]] = torch.arange(n_n, device=dev)
+        la, lb = loc[a[me]], loc[b[me]]
+        # 局域亲和度: 两端生产顶点 3D 距离越小越像同一顶点 -> 用 exp(-d/L)
+        d3 = torch.sqrt((xp[a[me]] - xp[b[me]]) ** 2 + (yp[a[me]] - yp[b[me]]) ** 2
+                        + (zp[a[me]] - zp[b[me]]) ** 2 + 1e-6)
+        aff = torch.exp(-d3 / 50.0)                            # L=50 (与原特征同量纲)
+        S = torch.zeros(n_n, n_n, device=dev, dtype=pT.dtype)
+        S[la, lb] = aff
+        S = 0.5 * (S + S.t())                                  # 对称化
+        S2 = S @ S
+        row = S.sum(1).clamp(min=1e-6)
+        sup[me] = S2[la, lb] / row[la]
+        # 行内 rank: 该边亲和度在同起点所有边中的分位 (越高越"排他")
+        rk_aff[me] = (S[la] > aff.unsqueeze(1)).float().mean(1)
+    node_der = torch.stack([pT / 1000., pmod / 1000., ip / 10., rank, iso,
+                            ntr[nb] / 100., npv[nb] / 10.], -1)
+    mp = 0.13957
+    ea = torch.sqrt(pmod[a] ** 2 + mp ** 2)
+    eb = torch.sqrt(pmod[b] ** 2 + mp ** 2)
+    m2 = (ea + eb) ** 2 - ((px[a] + px[b]) ** 2 + (py[a] + py[b]) ** 2 + (pz[a] + pz[b]) ** 2)
+    mpipi = torch.sqrt(m2.clamp(min=0))
+    up = ip[a] <= ip[b]                                        # a 更靠上游
+    sgn = torch.where(up, 1.0, -1.0)
+    dpT = sgn * (pT[a] - pT[b])                                # 规范化: 下游 − 上游
+    dIP = torch.where(up, ip[b] - ip[a], ip[a] - ip[b])        # 同样规范化为非负量级
+    P = torch.stack([px[a] + px[b], py[a] + py[b], pz[a] + pz[b]], 1)
+    dR3 = torch.stack([xp[a] - xp[b], yp[a] - yp[b], zp[a] - zp[b]], 1)
+    dzp = (P * dR3).sum(-1) / P.norm(dim=1).clamp(min=1e-6)    # 沿合动量的纵向分离
+    dzp = sgn * dzp                                            # 规范化: 下游 − 上游
+    cols = [dR, mpipi / 1000., (q[a] + q[b]).abs(), dpT / 1000., dIP / 10., rk_dR, dzp / 10.]
+    if use_triangle:
+        cols += [sup, rk_aff]
+    edge_der = torch.stack(cols, -1)
+    return node_der, edge_der
+
+
 class DFEILightningModule(L.LightningModule):
     def __init__(self, model, optimizer_class, optimizer_params, configs, pos_weights):
         super().__init__()
@@ -309,6 +480,59 @@ class DFEILightningModule(L.LightningModule):
         self.prune_focal_gamma = float(self.configs.get("prune_focal_gamma", 0.0))
         self._pw_nodes = pos_weights["nodes"]
         self._pw_edges = pos_weights["edges"]
+        # ==== [2026-09-22] 极端不平衡(tt 边正类率 ~0.14%, 完全图)下的两个训练侧开关 ====
+        # (a) edge_pos_weight_scale: 放大正类权重 -> 决策边界偏向 precision;
+        # (b) edge_ohem_frac: 只保留"最难"的一批负边参与损失 (OHEM), 其余负边丢弃。
+        #     两者默认关闭(1.0 / 0.0) 时与旧行为逐位一致。
+        _pw_scale = float(self.configs.get("edge_pos_weight_scale", 1.0))
+        if _pw_scale != 1.0:
+            self._pw_edges = self._pw_edges * _pw_scale
+            if self.configs["edge_prune"]:
+                self.edge_criterion = nn.BCEWithLogitsLoss(pos_weight=self._pw_edges)
+        self.edge_ohem_frac = float(self.configs.get("edge_ohem_frac", 0.0))
+        # ==== [2026-09-22] 边头 pairwise ranking 损失 (v614) ====
+        # 诊断: 边头 BCE 的 pos_weight≈700 把梯度全投在"推高真边", 对负边之间的相对次序
+        # 约束很弱 -> thr0.9 时几乎所有"信号样"边都被保留 (precision 退到基频)。
+        # 本项直接优化我们评测的排序: 见 edge_rank_loss 的注释。默认 0.0 = 关闭, 与旧行为一致。
+        self.edge_rank_w = float(self.configs.get("edge_rank_weight", 0.0))
+        self.edge_rank_nneg = int(self.configs.get("edge_rank_nneg", 64))
+        self.edge_rank_margin = float(self.configs.get("edge_rank_margin", 1.0))
+        # ==== [2026-09-23] delta_z0 方向处理 / 方向头 (leak 修复实验) ====
+        # 背景: 0702 用 np.sort(ParticleIndex) 决定边方向, 使唯一反对称特征 delta_z0 的符号
+        # 变成"单边且与真值相关"的量; 7 月模型因此学到一条不可迁移的捷径 (反事实: 抹掉符号
+        # 边头 AUC 0.9996->0.77~0.86; 0904 训练的模型只掉 0.04~0.09)。三个开关:
+        #   edge_dz_flip_prob: 训练时按无向对随机翻转 delta_z0 的符号 -> 方向变纯噪声 (零泄露基线)
+        #   edge_dz_ip_canon : 用**可测量**的 minIP 定方向 (IP 小的更靠上游/PV) -> 可迁移的有向特征;
+        #                      确定性变换, train/val/test 一致施加 (否则推理口径对不上)
+        #   dir_head_weight  : 让剪枝 MLP 多学一个"哪端更靠上游"(标签= truth depth), 见 MLP.lin_dir
+        self.dz_flip_prob = float(self.configs.get("edge_dz_flip_prob", 0.0))
+        self.dz_ip_canon = bool(self.configs.get("edge_dz_ip_canon", False))
+        self.dz_pvz_canon = bool(self.configs.get("edge_dz_pvz_canon", False))
+        self.dz_abs = bool(self.configs.get("edge_dz_abs", False))
+        self.dir_head_w = float(self.configs.get("dir_head_weight", 0.0))
+        self.dz_c, self.dz_s = 0.0, 1.0
+        self._nc, self._ns = {}, {}
+        _nd = self.configs.get("dz_norm_dict", "")
+        if _nd:
+            _d = torch.load(_nd, map_location="cpu", weights_only=False)
+            self._nc = {k: float(v) for k, v in _d["center"].items()}
+            self._ns = {k: (float(v) or 1.0) for k, v in _d["scale"].items()}
+            self.dz_c = self._nc.get("delta_z0_reco", 0.0)
+            self.dz_s = self._ns.get("delta_z0_reco", 1.0)
+            print(f"[dz] 归一化字典 {_nd}: dz center={self.dz_c:.3f} scale={self.dz_s:.3f}")
+        # ==== [2026-09-23] 剪枝 MLP 的派生输入 (物理派生量 / 三角传递性) ====
+        # 由 derive_pruning_features 现算, 经**零初始化适配器**注入剪枝 MLP (起点与旧模型等价)。
+        self.der_prune = bool(self.configs.get("derived_prune", False))
+        self.der_tri = bool(self.configs.get("derived_triangle", False))
+        self.node_der_dim = 7 if self.der_prune else 0
+        self.edge_der_dim = (7 + (2 if self.der_tri else 0)) if self.der_prune else 0
+        if self.der_prune:
+            print(f"[der_input] 派生输入启用: 节点 {self.node_der_dim} 维 / 边 {self.edge_der_dim} 维"
+                  f"{' (含三角传递)' if self.der_tri else ''}")
+        # 节点侧 pairwise ranking (边侧 ranking 已验证 +12.7%, 点的正类率高得多, 值得搬到点侧)
+        self.node_rank_w = float(self.configs.get("node_rank_weight", 0.0))
+        self.node_rank_nneg = int(self.configs.get("node_rank_nneg", 64))
+        self.node_rank_margin = float(self.configs.get("node_rank_margin", 1.0))
         # 链级 min-pooling recall 损失 (对准"整条链被剪掉"的失败模式)
         self.chain_recall_w = float(self.configs.get("chain_recall_weight", 0.0))
         self.chain_recall_edge_w = float(self.configs.get("chain_recall_edge_weight", 0.0))
@@ -396,7 +620,8 @@ class DFEILightningModule(L.LightningModule):
             # 方案A 上下文剪枝头挂在 GN block 内 (key 形如 model._blocks.N._context_head.*),
             # 前缀不固定 -> 用子串匹配纳入"新头缺参"白名单。
             miss = [k for k in cur if k not in state_dict
-                    and (k.startswith(heads) or "_context_head." in k)]
+                    and (k.startswith(heads) or "_context_head." in k or "lin_dir." in k
+                         or "der_adapter." in k)]
             shape_mm = []
             for k in cur:
                 if k not in state_dict:
@@ -703,6 +928,61 @@ class DFEILightningModule(L.LightningModule):
 
         # 保存原始 tt 物理边特征 (model forward 会原地修改 batch edges -> 必须提前 clone)
         orig_tt_edges = batch[('tracks', 'to', 'tracks')].edges.clone()
+        # ==== [2026-09-23] delta_z0 方向处理 (leak 实验; 必须在 forward 前改, 与造数据时的口径一致) ====
+        # 镜像 raw 值: raw -> sign*raw, 归一化空间里 v -> sign*v + (sign-1)*c/s
+        _do_flip = (mode == "train" and self.dz_flip_prob > 0)
+        if _do_flip or self.dz_ip_canon or self.dz_pvz_canon or self.dz_abs:
+            _tt = batch[('tracks', 'to', 'tracks')]
+            _tt.edges = _tt.edges.clone()
+            _v = _tt.edges[:, 3]
+            if self.dz_abs:
+                # 诚实基线 (对应 yukai 的 delta_z_mode="abs"): 只保留 |Δz| 的**大小**信息, 完全不给方向。
+                # 用途: 证明"不用方向也能达到同一水平", 挡回"你们是不是又靠顺序"的质疑。
+                _tt.edges[:, 3] = (_v * self.dz_s + self.dz_c).abs().sub(self.dz_c).div(self.dz_s)
+            else:
+                if self.dz_pvz_canon:
+                    # yukai 的方案: 按"minIP 关联 PV 的 z 更小者在前"定方向 (z 相同/无关联的对不翻转)。
+                    # 注意: 只对**两端关联到不同 PV** 的对生效 -> 同 PV 对仍是原顺序 (部分规范化)。
+                    _tpv = batch[("tracks", "to", "pvs")]
+                    _n_tr = batch["tracks"].x.shape[0]
+                    _snd, _rcv = _tpv.edge_index[0].long(), _tpv.edge_index[1].long()
+                    _ip = _tpv.edges.reshape(-1)
+                    _best = torch.full((_n_tr,), float("inf"), device=_v.device, dtype=_ip.dtype)
+                    _best = _best.scatter_reduce(0, _snd, _ip, reduce="amin", include_self=True)
+                    _is_best = _ip == _best[_snd]
+                    _assoc = torch.full((_n_tr,), -1, dtype=torch.long, device=_v.device)
+                    _assoc[_snd[_is_best]] = _rcv[_is_best]
+                    _ok = _assoc >= 0                    # 无 tr-pv 边的径迹不参与 (避免 yukai 版取 zpv[-1] 的错值)
+                    _zpv = (batch["pvs"].x[:, 2] * float(self._ns.get("zPV_reco", 1.0))
+                            + float(self._nc.get("zPV_reco", 0.0)))
+                    _tz = torch.zeros(_n_tr, device=_v.device, dtype=_zpv.dtype)
+                    _tz[_ok] = _zpv[_assoc[_ok]]
+                    _a, _b = _tt.edge_index[0].long(), _tt.edge_index[1].long()
+                    _sgn = torch.where((_ok[_a] & _ok[_b]) & (_tz[_a] > _tz[_b]),
+                                       -torch.ones_like(_v), torch.ones_like(_v))
+                elif self.dz_ip_canon:
+                    _ip = track_minip(batch)                    # 可测量: minIP 小的更靠上游
+                    _a, _b = _tt.edge_index[0].long(), _tt.edge_index[1].long()
+                    _sgn = torch.where(_ip[_a] <= _ip[_b],
+                                       torch.ones_like(_v), -torch.ones_like(_v))
+                else:
+                    _sgn = edge_dz_pair_sign(_tt.edge_index, self.dz_flip_prob,
+                                             salt=int(torch.randint(0, 2 ** 30, (1,)).item()))
+                _tt.edges[:, 3] = torch.where(_sgn < 0, -_v - 2.0 * self.dz_c / self.dz_s, _v)
+        # ==== [2026-09-23] 剪枝 MLP 的派生输入 (物理派生量 / 三角传递性) ====
+        # 从原始 px/py/pz/生产顶点/PV 关联现算, 经零初始化适配器注入剪枝 MLP (不重产数据)。
+        if self.der_prune:
+            try:
+                _nd_d, _ed_d = derive_pruning_features(batch, self._nc, self._ns, self.der_tri)
+                batch['tracks'].x_der = _nd_d
+                batch[('tracks', 'to', 'tracks')].der_edges = _ed_d
+                if mode == "train" and self.trn_log is not None and "der_stat" not in self.trn_log:
+                    self.trn_log["der_stat"] = [0.0]
+                    print(f"[der_input] 尺寸检查: 节点派生 {tuple(_nd_d.shape)} / 边派生 {tuple(_ed_d.shape)}"
+                          f" | 样例 边 [ΔR,m,|Σq|,ΔpT,ΔIP,iso,Δz]= "
+                          + " ".join(f"{x:+.2f}" for x in _ed_d[0].tolist()), flush=True)
+            except Exception as _e:
+                print(f"[der_input] WARN: {type(_e).__name__}: {_e}", flush=True)
         # 保存原始轨迹动量 (px,py,pz, 归一化) —— model forward 会原地覆盖 tracks.x
         # 为 encoder 表征, mass head 的物理真值 (ππ 不变质量) 需在覆盖前取出。
         orig_tracks_p = batch['tracks'].x[:, :3].clone()
@@ -740,15 +1020,51 @@ class DFEILightningModule(L.LightningModule):
                     get_block_score(log, block.node_weights['tracks'].squeeze(), y_nodes, i, var="nodes")
 
             if self.configs["edge_prune"]:
-                if use_focal:
-                    loss["tt_edges"] += focal_bce_with_logits(block.edge_logits[('tracks', 'to', 'tracks')], y_edges,
+                _e_logits = block.edge_logits[('tracks', 'to', 'tracks')]
+                if self.edge_ohem_frac > 0 and mode == "train":
+                    # [2026-09-22] OHEM: 保留全部正边 + 最难的一批负边 (按 pos_weight 加权后的逐边损失排序)
+                    _le = F.binary_cross_entropy_with_logits(_e_logits, y_edges,
+                                                             pos_weight=self._pw_edges.to(_e_logits.device),
+                                                             reduction="none")
+                    _neg = y_edges < 0.5
+                    _n_neg = int(_neg.sum().item())
+                    _k = max(1, int(self.edge_ohem_frac * _n_neg))
+                    if _n_neg > 0 and _k < _n_neg:
+                        _thr = torch.topk(_le[_neg], _k).values.min()
+                        _keep = (~_neg) | (_le >= _thr)
+                        loss["tt_edges"] += _le[_keep].mean()
+                    else:
+                        loss["tt_edges"] += _le.mean()
+                elif use_focal:
+                    loss["tt_edges"] += focal_bce_with_logits(_e_logits, y_edges,
                                                               pos_weight=self._pw_edges,
                                                               gamma=self.prune_focal_gamma)
                 else:
-                    loss["tt_edges"] += self.edge_criterion(block.edge_logits[('tracks', 'to', 'tracks')], y_edges)
+                    loss["tt_edges"] += self.edge_criterion(_e_logits, y_edges)
                 if mode == "test" and self.configs["plt_edges"]:
                     get_block_score(log, block.edge_weights[('tracks', 'to', 'tracks')].squeeze(), y_edges, i,
                                     var="edges")
+                # ==== [2026-09-22] v614: 边头 pairwise ranking 损失 (只在最后一个 block) ====
+                if (self.edge_rank_w > 0 and mode == "train"
+                        and i == len(self.model._blocks) - 1):
+                    _rl = edge_rank_loss(_e_logits, y_edges,
+                                         outputs[('tracks', 'to', 'tracks')].edge_index,
+                                         batch['tracks'].batch,
+                                         n_neg=self.edge_rank_nneg, margin=self.edge_rank_margin)
+                    if _rl is not None:
+                        loss["tt_rank"] = _rl
+                # ==== [2026-09-23] 节点侧 pairwise ranking (把边侧已验证的 +12.7% 搬到点侧) ====
+                # 动机: 链存活瓶颈在**点**(oracle: 只卡点 39.7% vs 只卡边 71.5%); 且点正类率远高于
+                # 边(0.14%) -> pos_weight 主导的问题在点侧更轻, ranking 更可能有效。
+                if (self.node_rank_w > 0 and mode == "train"
+                        and i == len(self.model._blocks) - 1 and "tracks" in block.node_logits):
+                    _nlg = block.node_logits["tracks"]
+                    _nidx = torch.arange(_nlg.shape[0], device=_nlg.device)
+                    _nl = edge_rank_loss(_nlg, y_nodes, torch.stack([_nidx, _nidx]),
+                                         batch['tracks'].batch,
+                                         n_neg=self.node_rank_nneg, margin=self.node_rank_margin)
+                    if _nl is not None:
+                        loss["node_rank"] = _nl
             if self.configs["pv_asso"]:
                 loss["pv_asso"] += self.pv_asso_criterion(block.edge_logits[("tracks", "to", "pvs")][pv_filter],
                                                           y_pv_asso[pv_filter])
@@ -806,9 +1122,50 @@ class DFEILightningModule(L.LightningModule):
                 loss["mom"] = mo_loss
                 log["mom_loss"].append(mo_loss.item())
 
+        # ==== [2026-09-23] 方向头监督: 让**剪枝 MLP 自己**学会"哪一端更靠上游" ====
+        # 标签 = truth 链内 depth 比较 (depth 由 truth_chain_structure 给出, 链根=0; 只在同链对上定义)。
+        # 动机: 0702 的"方向"是真值(ParticleIndex)免费送的; 这里改成让剪枝 MLP 从特征里学出来,
+        # 这样方向在 data/MC 上口径一致、可迁移 (推理时也可用同头定方向)。
+        if mode == "train" and self.dir_head_w > 0:
+            _blk = self.model._blocks[-1]
+            _dl = getattr(_blk, "edge_dir_logits", {}).get(('tracks', 'to', 'tracks'))
+            if _dl is not None:
+                try:
+                    from wmpgnn.reconstruction.topk_selection import truth_chain_structure
+                    _tt = batch[('tracks', 'to', 'tracks')]
+                    _a, _b = _tt.edge_index[0], _tt.edge_index[1]
+                    _lab = truth_chain_labels(_tt.y, _tt.edge_index, batch['tracks'].x.shape[0])
+                    _d = truth_chain_structure(_tt.y, _tt.edge_index, batch['tracks'].batch,
+                                               self.device)['depth']
+                    _m = (_lab[_a] >= 0) & (_lab[_a] == _lab[_b]) & (_d[_a] != _d[_b])
+                    if bool(_m.any()):
+                        _ydir = (_d[_a] < _d[_b]).to(torch.float32).unsqueeze(-1)
+                        loss["dir"] = F.binary_cross_entropy_with_logits(_dl[_m], _ydir[_m])
+                        if "dir_acc_loss" in log:      # 方向头准确率 (借 _loss 后缀走平均/记录)
+                            log["dir_acc_loss"].append(
+                                float(((_dl[_m] > 0) == (_ydir[_m] > 0.5)).float().mean()))
+                except Exception as _e:
+                    print(f"[dir_head] WARN: {type(_e).__name__}: {_e}")
+
         # 权重可配 (默认 1/1/33 与旧行为完全一致); 见 __init__ 中"剪枝损失再平衡"注释
         combined_loss = (self.lca_loss_w * loss["LCA"] + self.node_loss_w * loss["t_nodes"]
                          + self.edge_loss_w * loss["tt_edges"] + loss["pv_asso"])
+        # ==== 边头 pairwise ranking 损失 (v614) ====
+        if self.edge_rank_w > 0 and "tt_rank" in loss:
+            combined_loss = combined_loss + self.edge_rank_w * loss["tt_rank"]
+            if "edge_rank_loss" in log:
+                log["edge_rank_loss"].append(loss["tt_rank"].item())
+        # ==== 方向头 (v618/v619) ====
+        if self.dir_head_w > 0 and "dir" in loss:
+            combined_loss = combined_loss + self.dir_head_w * loss["dir"]
+            if "dir_loss" in log:
+                log["dir_loss"].append(loss["dir"].item())
+        # ==== 节点侧 ranking (v622) ====
+        if self.node_rank_w > 0 and "node_rank" in loss:
+            combined_loss = combined_loss + self.node_rank_w * loss["node_rank"]
+            if "node_rank_loss" in log:
+                log["node_rank_loss"].append(loss["node_rank"].item())
+
         # ==== 链级 min-pooling recall 损失 (点/边) ====
         # 对准"整条真值链被剪掉"的失败模式: 罚每条链里**最弱**的那个点/边。
         if mode == "train" and (self.chain_recall_w > 0 or self.chain_recall_edge_w > 0):

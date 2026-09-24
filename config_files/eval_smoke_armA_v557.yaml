@@ -1,0 +1,31 @@
+settings:
+  data_dir: /lzufs/home/guoqingxiang/dfei/eval_arms/A_0702/MC_normed
+  sample:
+  - inclusive_BsToJpsiPhi_00342629
+  nfiles:
+  - 1
+  model_arch: DFEI
+  model: 557
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+evaluate:
+  sample:
+  - inclusive_BsToJpsiPhi_00342629
+  nfiles:
+  - 1
+  over_write: smokeArmA

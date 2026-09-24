@@ -1,0 +1,32 @@
+# 0904 真实碰撞数据 (Collision24 DATA24, 无真值) · inference-only 行为统计
+settings:
+  data_dir: /lzufs/home/guoqingxiang/dfei/eval_arms/D_0904real/MC_normed
+  sample:
+  - inclusive_BsToJpsiPhi_24922901
+  nfiles:
+  - 4
+  model_arch: DFEI
+  model: 557
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  LCA: true
+  LCA_weights: true
+  node_prune: true
+  node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+evaluate:
+  sample:
+  - inclusive_BsToJpsiPhi_24922901
+  nfiles:
+  - 4
+  over_write: 0904real

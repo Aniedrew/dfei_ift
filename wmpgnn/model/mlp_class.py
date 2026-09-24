@@ -32,6 +32,7 @@ class MLP(torch.nn.Module):
             norm_kwargs: Optional[Dict[str, Any]] = None,
             plain_last: bool = True,
             bias: Union[bool, List[bool]] = True,
+            dir_outdim: int = 0,
     ):
         super().__init__()
 
@@ -84,6 +85,15 @@ class MLP(torch.nn.Module):
         self.supports_norm_batch = [False] * (len(channel_list) - 2)
         if isinstance(norm, str):
             norm = [norm] * (len(channel_list) - 1)
+
+        # ==== [2026-09-23] 方向头 (第二输出, 只给剪枝 MLP 用) ====
+        # 与剪枝输出**共享同一个 trunk**(所有继承的权重逐位不变), 只是并列一个
+        # 线性末层, 预测"这条有向边的 sender 是否更靠上游"(标签来自 truth depth)。
+        # 目的: 让**剪枝 MLP 自己**学会方向的物理含义, 而不是在 GNN 输出后另挂头。
+        # dir_outdim=0 (默认) 时行为与旧版逐位一致。
+        self.dir_outdim = int(dir_outdim)
+        self.lin_dir = Linear(channel_list[-2], self.dir_outdim) if self.dir_outdim > 0 else None
+        self.dir_logits = None
 
         iterator = channel_list[1:-1] if plain_last else channel_list[1:]
         for i, hidden_channels in enumerate(iterator):
@@ -149,8 +159,13 @@ class MLP(torch.nn.Module):
                 emb = x
 
         if self.plain_last:
+            pre_last = x                      # trunk 末端激活 (方向头与剪枝头共享它)
             x = self.lins[-1](x)
             x = F.dropout(x, p=self.dropout[-1], training=self.training)
+        else:
+            pre_last = x
+        if self.lin_dir is not None:
+            self.dir_logits = self.lin_dir(pre_last)
 
         return (x, emb) if isinstance(return_emb, bool) else x
 
@@ -158,10 +173,10 @@ class MLP(torch.nn.Module):
         return f'{self.__class__.__name__}({str(self.channel_list)[1:-1]})'
 
 
-def create_mlp(config: Dict[str, Any], outdim: int = -1) -> nn.Module:
+def create_mlp(config: Dict[str, Any], outdim: int = -1, dir_outdim: int = 0) -> nn.Module:
     layers = config["layers"].copy()
     if outdim > 0:
         layers[-1] = outdim
     norm = config["norm"]
     dropout = config["dropout"]
-    return MLP(channel_list=layers, norm=norm, dropout=dropout)
+    return MLP(channel_list=layers, norm=norm, dropout=dropout, dir_outdim=dir_outdim)

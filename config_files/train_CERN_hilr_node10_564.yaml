@@ -1,0 +1,198 @@
+# DFEI (2026-09-16) — lv564  点剪枝再平衡剂量扫描: node_prune_weight 5 -> 10
+# 基底: train_CERN_hilr_node5_557.yaml (当前 SOTA, cpt=551, lr 3e-4, 20ep)
+# 依据: 覆盖率仍是最大瓶颈 (oracle 说覆盖率还值 +24.5pp);
+#       历史上只有 node_prune_weight 动过覆盖率 (70.4% -> 73.5%), 故做剂量扫描。
+DFEI:
+  GNblocks:
+    MLP_forward:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm: None
+    MLP_infer:
+      dropout: 0.01
+      layers:
+      - -1
+      - 16
+      - 16
+      - 16
+      - 1
+      norm: None
+    nBlocks: 4
+    use_edge_weights: true
+    use_globals: true
+    use_node_weights: true
+    weighted_pass: true
+  cpt: 551
+  decoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - None
+      - None
+    usage: true
+  edge_types:
+  - tracks_tracks
+  - tracks_pvs
+  encoder:
+    global:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_pvs:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    tracks_tracks:
+      dropout: 0.01
+      layers:
+      - -1
+      - 128
+      - 128
+      - 16
+      norm:
+      - graph_norm
+      - None
+    usage: true
+  node_types:
+  - tracks
+  - pvs
+  op_trafo:
+    MLP:
+      dropout: 0.01
+      layers:
+      - -1
+      - -1
+      norm: None
+    global: None
+    pv: None
+    tr: None
+    tr_pv: None
+    tr_tr: 4
+    usage: true
+  use_pid: 'true'
+evaluate:
+  nfiles:
+  - 20
+  over_write: hilr_node10
+  sample:
+  - inclusive_00342442
+inference:
+  LCA: true
+  LCA_weights: true
+  chain_lca_ce: true
+  chain_lca_ce_weight: 1.0
+  chain_lca_filter: false
+  chain_lca_loss: true
+  chain_lca_loss_weight: 2.0
+  chain_lca_margin: 0.3
+  edge_prune: true
+  edge_prune_thr: 0.9
+  edge_prune_weights: true
+  node_prune: true
+  node_prune_thr: 0.9
+  node_prune_weight: 10.0
+  node_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+  struct_head: true
+  struct_head_weight: 0.3
+settings:
+  batch_size: 8
+  calibration: false
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260702/data/MC_normed
+  epochs: 20
+  gacc: 2
+  graph_mode: None
+  log_version: 564
+  lr: 0.0003
+  ncpu: 2
+  nfiles:
+  - 200
+  ngpu: 1
+  node_sel: 'true'
+  precision: 32
+  pv_model: None
+  sample:
+  - inclusive_00342442
+  weight_decay: 1.0e-05

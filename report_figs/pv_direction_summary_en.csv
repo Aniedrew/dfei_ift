@@ -1,0 +1,4 @@
+dataset,n_tracks,mis_ours,mis_minip,mis_ours_easy,hard_frac,mis_ours_hard,rescue_on_hard,n_hard,dz_ours_mean,dz_minip_mean,absdz_ours_med,absdz_minip_med,frac_neg_ours,frac_neg_minip
+0904 new-data model (v601),19018,8.692,10.7,1.674,10.785,66.748,33.252,2051,1.899,-2.762,2.792,3.382,35.027,71.695
+"0702 July (v557, arm A)",23225,2.209,12.0,0.627,12.043,13.765,86.235,2797,-0.364,-6.737,5.82,9.294,58.285,70.434
+"0904 degraded (v557, arm C)",18579,15.065,10.372,9.472,10.388,63.316,36.684,1930,4.862,-4.799,6.39,6.278,30.511,69.382

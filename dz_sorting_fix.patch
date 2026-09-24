@@ -1,0 +1,174 @@
+diff --git a/wmpgnn/data_loader/data_loader_class.py b/wmpgnn/data_loader/data_loader_class.py
+index 562bcac..f7731d6 100644
+--- a/wmpgnn/data_loader/data_loader_class.py
++++ b/wmpgnn/data_loader/data_loader_class.py
+@@ -9,6 +9,13 @@ from wmpgnn.data_loader.weights_calculator import get_hetero_weight
+ from wmpgnn.data_loader.helper import *
+ from wmpgnn.calibration.calibration_mask import *
+ 
++# Index of delta_z0_reco within configs['graphs']['tracks_tracks']
++# ([FromSameAssociatedPV_reco, theta_reco, trdist_reco, delta_z0_reco, log_DOCA_reco])
++DZ_COL = 3
++# Delta z norm values: normalized = (raw - DZ_CENTER) / DZ_SCALE
++DZ_CENTER = 1.628442
++DZ_SCALE = 170.132095
++
+ 
+ class DataSetLoader:
+     def __init__(self, configs, pv_model=None):
+@@ -21,16 +28,50 @@ class DataSetLoader:
+             self.calibration_class = CalibrationClass(configs)
+         self.edge_types = [("tracks", "tracks"), ("tracks", "pvs")]
+         self.make_bidirectional = configs['settings'].get('make_bi', True)
+-        
++        # If True, re-anchor each tr-tr edge so p1 is the track associated (by minIP) to the
++        # smaller-z PV, flipping delta_z0_reco's sign where needed.
++        self.resort_delta_z = configs['settings'].get('resort_delta_z_by_pv', False)
++        # ==== 2026-09-24 修复 (guoqingxiang review, 三处) ====
++        # (1) delta_z_mode 之前**从未被读取**: 调用点写的是 `_make_bidirectional(evt, True, ...)`,
++        #     传进去的是字面量 True, 不匹配任何字符串分支 -> 直接 NotImplementedError。
++        #     现在从配置读, 默认 'default' (与旧行为一致)。
++        # (2) 重锚定之前**嵌在 make_bi 判断里**: IFT 配置 make_bi=false 时完全不会执行 (死代码)。
++        #     现在独立于 make_bi。
++        # (3) delta_z 的 center/scale 之前**硬编码**成 0702 的 old_norm_ported (+1.6284/170.1321);
++        #     而 0904 数据用的是 -48.2874/216.5325 -> 镜像会偏 ~101 µm。现在从 settings.norm 字典读。
++        self.delta_z_mode = str(configs['settings'].get('delta_z_mode', 'default'))
++        self._dz_c, self._dz_s = self._read_dz_norm(configs)
++        print(f"[DataSetLoader] make_bi={self.make_bidirectional}, resort_delta_z={self.resort_delta_z}, "
++              f"delta_z_mode={self.delta_z_mode}, dz_norm=(c={self._dz_c:.4f}, s={self._dz_s:.4f})")
++
++    @staticmethod
++    def _read_dz_norm(configs):
++        """从 settings.norm 的归一化字典读 delta_z0 的 center/scale (修掉硬编码)。"""
++        try:
++            path = configs['settings'].get('norm', 'None')
++            if path and path != 'None':
++                d = torch.load(path, map_location='cpu', weights_only=False)
++                return float(d['center']['delta_z0_reco']), float(d['scale']['delta_z0_reco'])
++            print('[DataSetLoader] settings.norm 未设置, 回退硬编码 dz 常量 (仅 0702 数据正确!)')
++        except Exception as e:  # noqa: BLE001
++            print(f'[DataSetLoader] WARN 读归一化字典失败: {e}; 回退硬编码常量')
++        return DZ_CENTER, DZ_SCALE
++
+     def load_data(self, path, mode="train"):
+         data = load_file(path)
+ 
+         if "true" in self.configs["settings"].get("graph_mode", ""):
+             data = initial_pruning(data, self.configs["settings"])
+ 
++        # 重锚定独立于 make_bi (修复 2): 即使 make_bi=False 也要排序。
++        # 幂等: 已排好序的对第二次进入不会再次交换, 所以这里和下面 _make_bidirectional 里的调用不冲突。
++        if self.resort_delta_z:
++            for evt in data:
++                self._resort_tracks_tracks(evt, DZ_COL, self._dz_c, self._dz_s)
++
+         if self.make_bidirectional:
+             for evt in data:
+-                self._make_bidirectional(evt)
++                self._make_bidirectional(evt, self.delta_z_mode, False, self._dz_c, self._dz_s)
+ 
+         if self.pv_model is not None:
+             data = self._run_pv_association(data)
+@@ -45,13 +86,99 @@ class DataSetLoader:
+         return data
+ 
+     @staticmethod
+-    def _make_bidirectional(evt):
+-        """Extend track-track edges so the graph is undirected."""
++    def _track_associated_pv(graph):
++        """Per track, index of the PV with the smallest minIP (argmin log_minIP_reco)."""
++        store = graph[("tracks", "pvs")]
++        senders, receivers = store.edge_index[0].long(), store.edge_index[1].long()
++        ip = store.edges[:, 0]
++
++        n_tracks = graph["tracks"].x.shape[0]
++        # 修复: 补 device (原来 torch.full 建在 CPU, 数据在 GPU 时会 device mismatch)
++        best_ip = torch.full((n_tracks,), float("inf"), dtype=ip.dtype, device=ip.device)
++        best_ip.scatter_reduce_(0, senders, ip, reduce="amin", include_self=True)
++
++        is_best = ip == best_ip[senders]
++        # 修复: 没有 tr-pv 边的径迹保持 -1, 调用方必须屏蔽 (原来会静默取 zpv[-1], 是个错的 z)
++        assoc_pv = torch.full((n_tracks,), -1, dtype=torch.long, device=ip.device)
++        assoc_pv[senders[is_best]] = receivers[is_best]
++        return assoc_pv
++
++    @staticmethod
++    def _resort_tracks_tracks(graph, dz_col=DZ_COL, center=DZ_CENTER, scale=DZ_SCALE):
++        """Make p1 the track associated (by minIP) to the smaller-z PV on every tr-tr edge."""
++        store = graph[("tracks", "tracks")]
++
++        zpv = graph["pvs"].x[:, 2]
++        assoc_pv = DataSetLoader._track_associated_pv(graph)
++        # 修复: 无 tr-pv 边的径迹 (assoc_pv=-1) 必须屏蔽, 否则会静默取 zpv[-1] (错的 z)
++        valid = assoc_pv >= 0
++        track_z = torch.zeros_like(zpv[assoc_pv])
++        track_z[valid] = zpv[assoc_pv[valid]]
++
++        ei = store.edge_index.long()
++        zi, zj = track_z[ei[0]], track_z[ei[1]]
++        swap = (zi > zj) & valid[ei[0]] & valid[ei[1]]
++
++        new_ei = store.edge_index.clone()
++        new_ei[0, swap] = store.edge_index[1, swap]
++        new_ei[1, swap] = store.edge_index[0, swap]
++        store.edge_index = new_ei
++
++        # delta_z0_reco is stored normalized: undo the normalization before flipping the
++        # physical sign, then renormalize (mirrors the 'flipped' delta_z_mode below).
++        new_edges = store.edges.clone()
++        dz = new_edges[swap, dz_col]
++        denorm = -1 * (dz * scale + center)
++        new_edges[swap, dz_col] = (denorm - center) / scale
++        store.edges = new_edges
++
++        return graph
++
++    @staticmethod
++    def _make_bidirectional(evt, mode, resort_delta_z=False, center=DZ_CENTER, scale=DZ_SCALE):
++        """Extend track-track edges so the graph is undirected.
++
++        mode: 'default'(不改 dz) | 'abs'(|Δz|) | 'flipped'(两条方向副本符号相反) | 'none'(置 0)
++              | 'remove'(删掉该列, 5->4 维)
++        center/scale: delta_z0 的归一化参数, 必须与数据实际使用的字典一致 (修复 3)。
++        """
+         store = evt[("tracks", "tracks")]
++
++        if resort_delta_z:
++            DataSetLoader._resort_tracks_tracks(evt, DZ_COL, center, scale)
++
+         store.edge_index = torch.cat(
+             [store.edge_index, store.edge_index.flip(0)], dim=1
+         )
+-        store.edges = store.edges.repeat(2, 1)
++
++        if mode == 'default': # no changes to the delta z feature (bugged version)
++            store.edges = store.edges.repeat(2, 1)
++        elif mode == 'abs': # cast it to absolute value
++            edge_features = store.edges.clone()
++            dz = edge_features[:, 3]
++            denorm = torch.abs(dz * scale + center)
++            normed = (denorm - center) / scale
++            edge_features[:, 3] = normed
++            store.edges = edge_features.repeat(2, 1)
++        elif mode == 'flipped':  # sign flipped in recast
++            edge_features = store.edges.clone()
++            dz = edge_features[:, 3]
++            denorm = -1 *(dz * scale + center)
++            normed = (denorm- center) / scale
++            edge_features[:, 3] = normed
++            store.edges = torch.cat([store.edges, edge_features], dim=0)
++        elif mode == 'none':  # value removed, replaced with 0 just to have the same dimensionality
++            edge_features = store.edges.clone()
++            edge_features[:, 3] = 0
++            store.edges = edge_features.repeat(2, 1)
++        elif mode == 'remove':  # delta z feature column dropped entirely, reducing dimensionality by 1
++            edge_features = torch.cat(
++                [store.edges[:, :3], store.edges[:, 4:]], dim=1
++            )
++            store.edges = edge_features.repeat(2, 1)
++        else:
++            raise NotImplementedError
++
+         if getattr(store, "y", None) is not None:
+             store.y = store.y.repeat(2)
+         if getattr(store, "lca", None) is not None:
