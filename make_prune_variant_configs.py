@@ -84,6 +84,88 @@ VARIANTS = {
                  edge_dz_pvz_canon=True),
     "v626": dict(epochs=20, early_stop_patience=5, tag="v626_dz_abs", dz_dict=True,
                  edge_dz_abs=True),
+    # ---- 2026-09-24: 四条"正交维度"的方向 (分) + 一条全开 (总) ----
+    # 判据: 之前所有手段 (全局阈值 / node 阈值 / per-track topk / delta_z 定向 / ranking) 都在**同一条
+    #       precision-recall 曲线**上滑, 所以互相可替代、叠加收益有限。这四条换的是
+    #       **信息 / 目标函数 / 决策自由度**, 目标是抬高曲线本身。
+    # 依据: per_event_thr_oracle.py (v601, 300 事件): 2-B 最优 thr=0.99 vs 1-B 0.95~0.96;
+    #       事件自适应阈值 oracle 上界 +1.4~+3.4pp (All_fix) -> 事件级信息确有增量, 需要模型自己学。
+    # v627 = A2: 把 PV 关联头的"软同 PV 重叠"喂进 tt 剪枝 (打通"跨 PV 的边"这条通道)
+    # v628 = C1: 事件级自适应剪枝偏置 (端到端学, 无标签)
+    # v629 = B1: 链级对比损失 (在嵌入空间按真值链拉近/推远 -> 换目标函数)
+    # v630 = B2a: 事件级链数辅助头 (迫使事件级表征编码"这事件有几条链")
+    # v631 = 总: 四条一起 + 已验证的 ranking(10) + minIP 定向
+    "v627": dict(epochs=20, early_stop_patience=5, tag="v627_pvoverlap",
+                 gn=dict(pv_overlap_inject=True)),
+    "v628": dict(epochs=20, early_stop_patience=5, tag="v628_evtbias",
+                 gn=dict(event_bias=True)),
+    "v629": dict(epochs=20, early_stop_patience=5, tag="v629_chaincon",
+                 chain_contrastive_weight=0.5, chain_contrastive_tau=0.1),
+    "v630": dict(epochs=20, early_stop_patience=5, tag="v630_evtcount",
+                 gn=dict(event_count_head=True), event_count_weight=2.0),
+    "v631": dict(epochs=20, early_stop_patience=5, tag="v631_allin_new", dz_dict=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(pv_overlap_inject=True, event_bias=True, event_count_head=True),
+                 chain_contrastive_weight=0.5, event_count_weight=2.0),
+    # ---- 2026-09-24: 「当前最好版本」总装 + 长训 (v632) ----
+    # 挑选依据 (0904 官方 20 文件, 固定分母 13255):
+    #   有效 (纳入):
+    #     edge ranking (v614):  thr0.9 14.45->16.29 (+12.7%); thr0.95 -> 20.45 (全口径最好)
+    #     minIP 可测量定向 (v617/v620): +1.4% 单独, 与 ranking 叠加 +16.9%
+    #     node_prune_thr 0.95~0.97: v601 14.45->17.90->18.46 (最大单一旋钮, 评测侧; 本配置自带 test 也用它)
+    #     训练长度 (v610 60ep vs v601 20ep): +2% -> 本配置给 80ep/patience 15
+    #   无效/有害 (排除):
+    #     edge_topk: 同阈值下比无 topk 低 1.1pp (k8/16/32 在 thr0.9 完全一样) -> 去掉
+    #     OHEM / edge_pos_weight_scale: -12~-16% -> 去掉
+    #   正交但尚在验证中 (用户要求"都加一点", 各按温和权重纳入, 全部零初始化/默认关则等价旧模型):
+    #     pv_overlap_inject (跨 PV 信息) / event_bias (事件自适应) / event_count_head (链数辅助)
+    #     / chain_contrastive (链级目标)
+    "v632": dict(epochs=80, early_stop_patience=15, tag="v632_best", dz_dict=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(pv_overlap_inject=True, event_bias=True, event_count_head=True),
+                 chain_contrastive_weight=0.5, event_count_weight=2.0,
+                 thr=0.95),
+    # ---- 2026-09-25 层2: v633 = 只留有效项 + 唯一被证明抬高曲线的成分 ----
+    # v631(19.77) 中 event_count_head (v630 单测 -19%) / pv_overlap_inject (v627 单测 -2.6%) 已证负 -> 剔除;
+    # 加入 v624 的派生输入 + 三角传递 (benchmark 唯一在所有指标上同时抬高: edge AP +67%, p@r90 x2.2, node AP +16%)
+    # 及 chain_lca_filter; 保留 ranking + minIP 定向 + event_bias + 链对比 (v628/v629 微正)。
+    "v633": dict(epochs=60, early_stop_patience=15, tag="v633_clean_stack", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
+                 chain_contrastive_weight=0.5, thr=0.95),
+    # ---- 层3a: v637 = v633 + line-graph 边-边注意力 (唯一能结构性攻 fake_inter 的手段) ----
+    "v637": dict(epochs=60, early_stop_patience=15, tag="v637_linegraph", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9,
+                         line_graph_attn=True, line_graph_rounds=1, line_graph_heads=4,
+                         line_graph_hidden=32),
+                 chain_contrastive_weight=0.5, thr=0.95),
+    # ---- 层3b/3c: v635 = v633 + listwise(InfoNCE) 顶部排序; v636 = v633 + 次级顶点一致性特征 ----
+    # 依据: 边 AUC ~0.97 但 AP 仅 0.29 -> 瓶颈在顶部难负例之间的次序, listwise 把梯度集中到候选集;
+    #       fake_inter(跨链) 实为"同 PV、不同次级顶点" -> 用两径迹公共垂足 z / 飞行距离 / 共线性替代 IP-PV 家族。
+    "v635": dict(epochs=60, early_stop_patience=15, tag="v635_listwise", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 edge_rank_mode="infonce",
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
+                 chain_contrastive_weight=0.5, thr=0.95),
+    "v636": dict(epochs=60, early_stop_patience=15, tag="v636_vertex", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, derived_vertex=True,
+                 chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=12),
+                 chain_contrastive_weight=0.5, thr=0.95),
+    # ---- 2026-09-26 v639 = v633 配方 + 四处 bugfix (单变量: 只带修复, 不动结构/超参) ----
+    # 修复内容: (1) weights_calculator 里 pv_asso 的 pos_weight 用 `=` 覆盖 -> 改成 `+=` (PV 关联头类别平衡);
+    #           (2) chain_contrast 损失落日志 (此前不可见); (3) 派生特征算失败在 train 模式 raise (不再静默降级);
+    #           (4) 训练自带 test 改用 best ckpt (与下游 eval 口径统一; 注意: 自报数字因此变成 best-ckpt 口径)。
+    "v639": dict(epochs=60, early_stop_patience=15, tag="v639_fix_pvasso", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
+                 chain_contrastive_weight=0.5, thr=0.95),
 }
 
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
@@ -121,7 +203,15 @@ def main():
                        ("node_rank_nneg", "node_rank_nneg"),
                        ("derived_prune", "derived_prune"),
                        ("derived_triangle", "derived_triangle"),
-                       ("chain_lca_filter", "chain_lca_filter")]:
+                       ("chain_lca_filter", "chain_lca_filter"),
+                       ("event_count_weight", "event_count_weight"),
+                       ("chain_contrastive_weight", "chain_contrastive_weight"),
+                       ("chain_contrastive_tau", "chain_contrastive_tau"),
+                       # [2026-09-26] 层3 新键: listwise 排序模式 / 次级顶点一致性特征
+                       ("edge_rank_mode", "edge_rank_mode"),
+                       ("derived_vertex", "derived_vertex"),
+                       ("edge_dz_abs", "edge_dz_abs"),
+                       ("edge_dz_pvz_canon", "edge_dz_pvz_canon")]:
             if k in v:
                 c["inference"][key] = v[k]
         if v.get("dz_dict"):

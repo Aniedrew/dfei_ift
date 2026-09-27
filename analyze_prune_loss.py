@@ -71,6 +71,8 @@ def main():
     S = {k: float(nd["scale"][k + "_reco"]) for k in ("px", "py", "pz")}
 
     e_rows, c_rows = [], []
+    nsc_acc, nlab_acc = [], []      # [benchmark] 节点头累积
+    lca_s_acc, lca_y_acc, frag_rows = [], [], []   # [benchmark] 非剪枝轴: LCA 头 + 链碎裂度
     n_evt = 0
     for batch in ckl.test_dataloader():
         batch = batch.to(dev)
@@ -79,6 +81,13 @@ def main():
         raw_x = batch["tracks"].x.detach().cpu().clone()
         ft = batch["tracks"].ft.detach().cpu().numpy().astype(int)
         y_tt = batch[("tracks", "to", "tracks")].y.detach().cpu().numpy().reshape(-1)
+        # [2026-09-24] benchmark: 真值 PV 关联 (用于把 fake_inter 拆成 同PV / 跨PV 两个子类)
+        ei_tp = batch[("tracks", "to", "pvs")].edge_index.detach().cpu()
+        pb = batch["pvs"].batch.detach().cpu()
+        try:
+            y_tp = batch[("tracks", "to", "pvs")].y.detach().cpu().numpy().reshape(-1)
+        except Exception:
+            y_tp = None
         if module.use_pid == "true":
             batch["tracks"].x = torch.cat([batch["tracks"].x, batch["tracks"].pid], dim=1)
         with torch.no_grad():
@@ -124,21 +133,71 @@ def main():
             ys = (y_tt[em.numpy()] > 0).astype(int)
             scs = ew[em.numpy()]
             is_sig = (ft[gt] != 1).astype(int)
+            multi_b = int(len(chains) > 1)
+            # 真值 PV (局部索引): 取该径迹所有 tr-pv 边中 y 最大的 PV, 无则 -1
+            truth_pv = np.full(len(gt), -1, dtype=int)
+            if y_tp is not None and len(y_tp):
+                m_tp = (tb[ei_tp[0]].numpy() == gid) & (pb[ei_tp[1]].numpy() == gid)
+                for kt in np.nonzero(m_tp)[0]:
+                    if y_tp[kt] > 0:
+                        ti = g2l.get(int(ei_tp[0][kt]))
+                        if ti is not None:
+                            truth_pv[ti] = int(ei_tp[1][kt])
+            # [benchmark] 节点头: 累积 (分数, 是否真值径迹, 事件是否多 B)
+            nsc_acc.append(nw[gt]); nlab_acc.append(is_sig)
             for k in range(ei_e.shape[1]):
                 i, j = int(ei_e[0, k]), int(ei_e[1, k])
                 si, sj = is_sig[i], is_sig[j]
                 ci_, cj_ = cl_id[i], cl_id[j]
+                sub = ""
                 if ys[k] == 1:
                     cls = "true"
                 elif si and sj and ci_ >= 0 and ci_ == cj_:
                     cls = "fake_intra"          # 同链但非真值结构边 (深度错)
                 elif si and sj and (ci_ < 0 or cj_ < 0 or ci_ != cj_):
                     cls = "fake_inter"          # 两端都是真值径迹但不同链 -> 需上下文
+                    if truth_pv[i] < 0 or truth_pv[j] < 0:
+                        sub = "pv_unk"
+                    else:
+                        sub = "same_pv" if truth_pv[i] == truth_pv[j] else "diff_pv"
                 elif si or sj:
                     cls = "fake_sigbkg"
                 else:
                     cls = "fake_bkgbkg"
-                e_rows.append(dict(evt=n_evt, cls=cls, score=float(scs[k])))
+                e_rows.append(dict(evt=n_evt, cls=cls, sub=sub, multi_b=multi_b, score=float(scs[k])))
+            # ==== [2026-09-26] 非剪枝轴: (a) LCA 头判别力; (b) 真值链在剪枝图上的碎裂度 ====
+            # 动机: v631 剪枝曲线最差却 All_fix 最高(24.46) -> All_fix 主要由链装配/解码决定,
+            #       必须把"非剪枝头"也纳入 benchmark, 否则无法解释端到端指标。
+            _ns = nw[gt] > a.thr          # 存活节点 (与剪枝用同一 thr)
+            _es = scs > a.thr             # 存活边
+            try:
+                _ll = out[("tracks", "to", "tracks")].edges[em.numpy()]
+                if _ll.dim() == 2 and _ll.shape[1] >= 2:
+                    lca_s_acc.append((_ll[:, 1] - _ll[:, 0]).numpy())   # 类1 - 类0
+                    lca_y_acc.append(ys)
+            except Exception:
+                pass
+            _par = list(range(len(gt)))
+
+            def _find(x, _par=_par):
+                while _par[x] != x:
+                    _par[x] = _par[_par[x]]
+                    x = _par[x]
+                return x
+            for k in range(ei_e.shape[1]):
+                if not _es[k]:
+                    continue
+                i, j = int(ei_e[0, k]), int(ei_e[1, k])
+                if _ns[i] and _ns[j]:
+                    ra, rb = _find(i), _find(j)
+                    if ra != rb:
+                        _par[ra] = rb
+            for c in np.unique(cl_id[cl_id >= 0]):
+                mem = np.nonzero(cl_id == c)[0]
+                surv = mem[_ns[mem]]
+                comps = len({_find(int(x)) for x in surv})
+                frag_rows.append(dict(evt=n_evt, n_tracks=len(mem), n_surv=len(surv), n_comp=comps,
+                                      full=int(len(surv) == len(mem)), single=int(comps == 1)))
             # 事件内数组 (按局部索引)
             xg = raw_x[gt]; nwg = nw[gt]; sigg = is_sig
             # 链级物理量
@@ -194,6 +253,67 @@ def main():
             lab = np.r_[np.ones(len(tr)), np.zeros(len(s))]
             au = auc(np.r_[tr, s], lab)
             print(f"{cls:>14}{len(s):>8}{100*len(s)/len(e):>8.1f}{np.median(s):>10.4f}{keep:>13.1f}{au:>12.4f}")
+    # ==== [2026-09-24] pruning AUC benchmark (阈值无关, 供跨版本/跨方案比较) ====
+    nsc = np.concatenate(nsc_acc) if nsc_acc else np.zeros(0)
+    nlab = np.concatenate(nlab_acc) if nlab_acc else np.zeros(0, dtype=int)
+    print("\n--- 节点头 (真值径迹 vs 背景/ghost) ---")
+    if len(nsc):
+        print(f"  AUC={auc(nsc, nlab):.4f}  AP={ap_score(nsc, nlab):.4f}  "
+              f"precision@r90={prec_at_recall(nsc, nlab, 0.90):.4f}  @r99={prec_at_recall(nsc, nlab, 0.99):.4f}"
+              f"  (正类率 {100*nlab.mean():.2f}%)")
+    fi = e[e.cls == "fake_inter"]
+    print("\n--- fake_inter 子类 (最该被抬高的那一类) ---")
+    print(f"{'子类':>10}{'边数':>8}{'':>8}{'score中位':>10}{'@thr保留%':>13}{'AUC vs真边':>12}")
+    for sb in ["same_pv", "diff_pv", "pv_unk"]:
+        s = fi[fi["sub"] == sb].score.values
+        if len(s) == 0:
+            continue
+        print(f"{sb:>10}{len(s):>8}{'':>8}{np.median(s):>10.4f}{100*(s>a.thr).mean():>13.1f}"
+              f"{auc(np.r_[tr, s], np.r_[np.ones(len(tr)), np.zeros(len(s))]):>12.4f}")
+    print("\n--- 按事件类型拆 (单 B vs 多 B) ---")
+    for mb, nm in [(0, "1-B"), (1, "multi-B")]:
+        se = e[e.multi_b == mb]
+        if len(se) == 0 or (se.cls == "true").sum() == 0:
+            continue
+        print(f"{nm:>8}: 边 AUC={auc(se.score.values, (se.cls=='true').astype(int).values):.4f} "
+              f"AP={ap_score(se.score.values, (se.cls=='true').astype(int).values):.4f} "
+              f"(边数 {len(se)}, 真边率 {100*(se.cls=='true').mean():.2f}%)")
+
+    def _auc_of(s):
+        return auc(np.r_[tr, s], np.r_[np.ones(len(tr)), np.zeros(len(s))]) if len(s) and len(tr) else np.nan
+    print("\n--- 非剪枝轴 (链装配 / LCA 头) ---")
+    if lca_s_acc:
+        _ls, _ly = np.concatenate(lca_s_acc), np.concatenate(lca_y_acc)
+        print(f"  LCA 头 (类1-类0, 二分类口径): AUC={auc(_ls, _ly):.4f} AP={ap_score(_ls, _ly):.4f}")
+    if frag_rows:
+        fr = pd.DataFrame(frag_rows)
+        print(f"  真值链 {len(fr)} 条: 全存活 {100*fr.full.mean():.1f}% | 单连通分量 {100*fr.single.mean():.1f}%"
+              f" | 平均碎裂分量数 {fr.n_comp.mean():.2f} | 平均存活占比 {100*(fr.n_surv/fr.n_tracks).mean():.1f}%")
+        print(f"  存活链里 单分量 占比: {100*fr[fr.n_surv>0].single.mean():.1f}%"
+              f" | 平均分量数(存活链) {fr[fr.n_surv>0].n_comp.mean():.2f}")
+
+    row = dict(tag=a.tag, version=a.version, events=n_evt,
+               pos_rate=round(100 * float((e.cls == "true").mean()), 3),
+               edge_auc=round(auc(sc_all, lab_all), 4), edge_ap=round(ap_score(sc_all, lab_all), 4),
+               edge_p_at_r90=round(prec_at_recall(sc_all, lab_all, 0.90), 4),
+               edge_p_at_r99=round(prec_at_recall(sc_all, lab_all, 0.99), 4),
+               node_auc=round(auc(nsc, nlab), 4) if len(nsc) else np.nan,
+               node_ap=round(ap_score(nsc, nlab), 4) if len(nsc) else np.nan,
+               auc_fake_inter=round(_auc_of(fi.score.values), 4),
+               auc_fake_inter_samepv=round(_auc_of(fi[fi["sub"] == "same_pv"].score.values), 4),
+               auc_fake_inter_diffpv=round(_auc_of(fi[fi["sub"] == "diff_pv"].score.values), 4),
+               auc_fake_sigbkg=round(_auc_of(e[e.cls == "fake_sigbkg"].score.values), 4),
+               auc_fake_bkgbkg=round(_auc_of(e[e.cls == "fake_bkgbkg"].score.values), 4),
+               chain_surv=round(100 * float(ch.surv.mean()), 2), thr=a.thr,
+               lca_auc=round(auc(np.concatenate(lca_s_acc), np.concatenate(lca_y_acc)), 4) if lca_s_acc else np.nan,
+               lca_ap=round(ap_score(np.concatenate(lca_s_acc), np.concatenate(lca_y_acc)), 4) if lca_s_acc else np.nan,
+               chain_full_surv=round(100 * float(np.mean([r["full"] for r in frag_rows])), 2) if frag_rows else np.nan,
+               chain_single_comp=round(100 * float(np.mean([r["single"] for r in frag_rows])), 2) if frag_rows else np.nan,
+               mean_comp=round(float(np.mean([r["n_comp"] for r in frag_rows])), 3) if frag_rows else np.nan)
+    bf = f"{a.out}/bench_auc.csv"
+    pd.DataFrame([row]).to_csv(bf, mode="a", header=not os.path.exists(bf), index=False)
+    print(f"\n[benchmark] 汇总行已追加 -> {bf}")
+
     print("\n--- 剪枝效率 vs 物理量 (存活率 %, 括号内为该箱链数) ---")
     for col, bins in [("chain_pt", [0, 5, 10, 20, 30, 50, 1e9]), ("sum_pt", [0, 10, 20, 40, 80, 1e9]),
                       ("chain_abs_eta", [0, 2, 3, 3.5, 4, 1e9]), ("n_daughters", [0, 3, 4, 5, 6, 1e9]),
@@ -202,7 +322,7 @@ def main():
             continue
         b = pd.cut(ch[col], bins)
         g = ch.groupby(b, observed=True)
-        txt = "  ".join(f"{int(mid.left_ if hasattr(mid,'left') else 0)}-{int(mid.right if hasattr(mid,'right') else 0)}:"
+        txt = "  ".join(f"{int(mid.left if hasattr(mid,'left') else 0)}-{int(mid.right if hasattr(mid,'right') else 0)}:"
                         f"{100*v:.0f}%({n})" for mid, v, n in zip(g.size().index, g.surv.mean(), g.size()))
         print(f"  {col:>16}: {txt}")
 
