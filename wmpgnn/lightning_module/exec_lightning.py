@@ -110,7 +110,15 @@ def evaluate(trainer, module, tst_loader=None, chunkloader=None):
             enable_checkpointing=False,
             enable_progress_bar=False,
         )
-    if tst_loader is not None:
-        trainer.test(module, dataloaders=tst_loader)
-    else:
-        trainer.test(module, dataloaders=chunkloader)
+    # [2026-09-26 FIX] 原来直接 trainer.test(module, ...) -> PL 不加载任何 ckpt, 用的是**末轮
+    # in-memory 权重**; 而下游独立 eval(load_module.get_bis_model) 用的是**val 最小的 best ckpt**。
+    # 两个口径在 v614 上实测差 2.5pp (16.32 vs 13.81), 会让"同一次 run 自报指标"与"下游评估"不可比。
+    # 这里改成优先 test best ckpt; 若 trainer 上没有可用的 checkpoint 回调则显式回退并打印。
+    _ds = tst_loader if tst_loader is not None else chunkloader
+    try:
+        trainer.test(module, dataloaders=_ds, ckpt_path="best")
+        print("[evaluate] 已使用 best ckpt (val_combined_loss 最小) 做测试", flush=True)
+    except Exception as _e:
+        print(f"[evaluate] ckpt_path='best' 不可用 ({type(_e).__name__}: {_e}); "
+              f"回退到末轮 in-memory 权重", flush=True)
+        trainer.test(module, dataloaders=_ds)

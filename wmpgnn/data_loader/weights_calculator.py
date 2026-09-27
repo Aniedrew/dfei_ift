@@ -42,8 +42,10 @@ def get_hetero_weight(_data, _configs):
 
         if config.get("pv_asso_weights"):
             selbool = evt[("tracks", "to", "pvs")].y.squeeze() == 0
-            raw_weights["pos_pv_asso"] = torch.sum(~selbool, ).to(torch.int64)
-            raw_weights["neg_pv_asso"] = torch.sum(selbool).to(torch.int64)
+            # [2026-09-26 FIX] 原来用 `=` 而非 `+=`: 会把累加结果覆盖成"最后一个事件"的计数,
+            # 使 pos_weight["pv_asso"] 被单事件带偏 (同函数内 frag/FT 都用 +=, 只有这里写错)。
+            raw_weights["pos_pv_asso"] = raw_weights.get("pos_pv_asso", 0) + torch.sum(~selbool).to(torch.int64)
+            raw_weights["neg_pv_asso"] = raw_weights.get("neg_pv_asso", 0) + torch.sum(selbool).to(torch.int64)
 
     return raw_weights
 
