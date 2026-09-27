@@ -662,3 +662,139 @@ GPU 分配注意：调度器会把多个作业塞同一物理卡（GPU_NOTE.md �
 - **CSVLogger 动态字段崩溃（2026-09-09，ab05 首次踩，version_504）**：训练中断，`ValueError: dict contains fields not in fieldnames: 'train_LCA_*' ...`。根因方向：`dfei_lightning_module.on_train/on_validation_epoch_end` 均遍历 `self.log` 以 `train_/val_` 前缀重写 CSV header；当字段集合随训练变化（ab05 为唯一**单开 `chain_lca_ce`、关闭 `chain_lca_loss`** 的配置，其它 job 均双开链 loss）时 header 被锁定为 val 子集，后续新增 train_* 字段 → 崩溃。**规避**：链相关 loss 务必**双开**（`chain_lca_ce:true` + `chain_lca_loss:true`，与 v47/v511/v517 一致），勿单独开 ce。教训：config 里若只开某一链 loss，首 epoch 的 CSV re-write 可能崩；`train_CERN_ab05_ce.yaml` 已恢复双开并重提。注：该崩溃与优化本身无关。
 - **作业内自重提交不可靠（2026-09-07 定论）**：GPU 作业 env 常 >64KB，而 hep_sub 组解析需要的变量（_CONDOR_*/HepJob_SiteName/BATCH_SYSTEM 等）恰是 env 体积主力 → trim_env 删它们报 "No resource serving for group 'ghigh'"，保留则 env-too-big；且调度器会静默丢弃作业内重提。**结论：不要在 GPU 作业内 hep_sub 自重提交**。消融链主脚本已改为"只执行一步"；但 CPU watchdog（`ablation_watchdog.sh`）也**不被调度**（ghigh CPU-only 作业排队数天 idle，与 3 个老 watchdog_eval 同理）→ 实际由人工在交互侧按步提交（可靠）。
 - **坏卡自动重提（2026-09-08 修正）**：之前"作业内自重提交不可靠"的根因其实是**提交者 shell env 被污染变大**（>64KB）。从干净终端提交的作业 env 小（~16KB），作业内 hep_sub 自重提交完全可靠（submit_eval.sh 一直如此且有效）。训练脚本 [submit_train_cern_one.sh] 已升级为 submit_eval 同款：PREFLIGHT 快速失败 + 无限自动重提 (sleep 60) + 运行时 CUDA/OOM 错误重试 + 可选 `-wn` 指定节点。消融链 PREFLIGHT 分支同样改回自动重排。watchdog 弃用。坏卡池多张 (e2ac1338/4d72a0dc/5d195d15)，全池分配命中坏卡概率高但自动重试会自愈；强制 -wn 指定节点排队慢，默认不指定。
+
+## 2026-09-22 ~ 09-25：切到 0904 修复数据 + pruning 基准化（关键转折）
+
+### 0. 本轮口径（此后所有数字）
+- 数据：`DFEI_IFT_20260904`（bug 修复版）MC；测试集 `inclusive_00342451` 20 文件。
+- **固定分母**：`All_fix = All% × N / 13255`（13255 = 该测试集未剪枝真值链总数）。旧口径分母随剪枝变化 → 作废。
+- **ckpt 口径有两套（重要坑）**：训练自带 test 用**末轮权重**；独立 eval（`get_bis_model`）用 **val_combined_loss 最小**的 ckpt。二者在 v614 上差 2.5pp（见 §3）。
+- 除非注明，thr = 0.9（node/edge prune）。
+
+### 1. dz 符号泄露：定论
+- 三版预处理全量 diff 只有 5 处差异：**0702 在 `edge_builder` 里 `np.sort(ParticleIndex)` 决定 tt 边方向**、0904 改为按 df 顺序；0904 新增 `remove_ghosts`(Prob_ghost<0.18183) 与 `remove_duplicate_mc_tracks`(按 ghost 最小保留)；空事件跳过。标签定义（`topoLCA_determination`）两版一致且对称。
+- **顺序确实带真值信息**：`Δq = q(sender) − q(receiver)` 对 y>0 的 AUC，0702 的 ΔCharge **0.590**（0904 为 0.497，即随机）。
+- 但**唯一反对称特征 `delta_z0` 是载体**：模型级反事实（抹掉符号=取 |dz|，AUC 阈值无关）：
+
+| 模型 | 数据 | 原样 | 抹掉 dz 符号 | 只留 dz<0 | 只留 dz>0 |
+|---|---|---|---|---|---|
+| v557 / v38 / v47（0702 训） | 0702 | 0.9996 / 0.9995 / 0.9994 | **0.8152 / 0.7718 / 0.8551** | 0.9983 / 0.9951 / 0.9983 | 0.805/0.807/0.889 |
+| v601（0904 训）×3 | 0904 | 0.947 / 0.982 / 0.933 | 0.911 / 0.938 / 0.846 | — | — |
+
+  ⇒ 7 月模型的边头实质是"**dz 单边判据**"（抹符号掉 0.14–0.23，只留负半边无损）；0904 模型只掉 0.04–0.09。**leak = 方向约定 × 反对称载体**，两者缺一不可。
+- **方法学教训**：`镜像 dz`（全局翻符号）是**无效测试**（AUC 对单调变换不变，必不降）；必须用**折叠/单边截断/端点交换增广**。
+- **影响范围仅吃 tt 边特征的头**（边剪枝头 + LCA 4 类头）；PV 关联头吃 tr-pv 边（log_minIP），**不是**这条通道。
+- **修法**：0904 已无此问题；若要让老数据干净，最稳是**随机化每个无序对的方向**（而非给 dz 加 abs）。
+
+### 2. 评测侧发现（三个，均已定量）
+- **topk 结案（v601，20 文件）**：`k0 n90`=14.45 → `k16 n90`=13.46；`k0 n95`=**17.90** vs `k16 n95`=**16.78**；`k0 n97`=**18.46** vs `k16 n97`=17.34；且 thr0.9 下 k8/k16/k32 = 13.47/13.46/13.46（完全一样）。⇒ **topk 无独立价值、同阈值下更差**；v613 的"特大提升"实际来自**阈值**。（注：`edge_topk>0` 时代码完全取代边阈值，`edge_prune_thr` 变死键。）
+- **阈值是最大单一旋钮**（v601：0.9/0.95/0.97 = 14.45/17.90/**18.46**）。v614 末轮：0.9/0.95/0.97 = 16.32/**20.45**/**23.98**（当前全口径最好）；v620 = 16.97/22.18/23.38。代价：`none_iso` 从 74.6% 降到 43–52%（孤立真值粒子丢得更多）。
+- **ckpt 选择坑**：v614 的 min-val ckpt（ep14）= **13.81**，而末轮 ep19 = **16.32**（差 2.5pp）；v620 ep04/ep19 = 16.79/16.97、v622 ep02/ep07 = 13.47/13.60（这两版不敏感）。⇒ 用近乎持平的 `val_combined_loss` 选 ckpt 会白丢分，**换 ckpt 准则是免费增益**。（实现：伪 `version_9xxxxx` 目录 + 软链指定任意 epoch。）
+
+### 3. 训练侧各项（0904，thr0.9，全部出自训练自带 test）
+| 版本 | 内容 | All_fix | 判定 |
+|---|---|---|---|
+| v601 | 基线（v38 配方 20ep） | 14.45 | 参照 |
+| v610 | 60ep | 14.76 | +2%（长度） |
+| **v614** | **edge pairwise ranking** | **16.29** | **+12.7% 有效** |
+| **v620** | ranking + minIP 定向 | **16.89** | +16.9% 有效 |
+| v621 | 同 v620 但 60ep | 16.24 | 长度无额外收益 |
+| v631 | v620 + 4 个新方向 | **19.77** | **+36.8% 有效（最强）** |
+| v624 | 派生输入(节点7+边7) + 三角传递 + chain_lca_filter | 15.24 | +5.5% 有效 |
+| v626 | 只保留 \|dz\|（去方向） | 15.02 | +3.9% |
+| v628 | 事件级自适应偏置 | 14.99 | +3.7% |
+| v625 / v617 | zPV 定向 / minIP 大小定向 | 14.58 / 14.66 | +0.9~1.4% |
+| v629 | 链级对比损失 | 14.49 | ≈ 0 |
+| v623 | 仅派生输入 | 14.31 | ≈ 0（三角特征才是关键）|
+| v618 / v619 | 方向头 / 方向头+定向 | 14.25 / 14.37 | −1.4% / −0.5% |
+| v627 | PV 软重叠注入剪枝（预测无效，实测 −2.6%） | 14.07 | 负 |
+| v622 | 上下文剪枝头 + 节点 ranking | 13.54 | 负（−6%）|
+| v616 | dz 符号随机化 | 12.80 | 负（−11.5%，证明方向是真信息）|
+| v611/612/615 | OHEM / edge_pw×3 | 12.15/12.76/12.64 | 负 |
+| v630 | 事件级链数头 | 11.64 | 强负（−19%）|
+
+### 4. pruning AUC/AP 基准（**新的验收判据**）
+`analyze_prune_loss.py` 已改造为阈值无关 benchmark，累积写 `report_figs/bench_auc.csv`（一版一行）。200 事件、末轮 ckpt：
+
+| version | edge_auc | **edge_ap** | p@r90 | node_auc | node_ap | fake_inter | (samepv) | sigbkg | bkgbkg | chain_surv |
+|---|---|---|---|---|---|---|---|---|---|---|
+| v601 | 0.9705 | 0.292 | 0.0169 | 0.9308 | 0.597 | 0.6555 | 0.6475 | 0.9181 | 0.9749 | 36.1% |
+| v614（ranking） | 0.9645 | 0.368 | 0.0128 | 0.9266 | 0.644 | 0.6883 | 0.6764 | 0.9146 | 0.9690 | 41.8% |
+| v620（rank+canon） | 0.9559 | 0.357 | 0.0141 | 0.9348 | 0.632 | 0.6459 | 0.6394 | 0.8909 | 0.9615 | 40.4% |
+| **v624（派生+三角）** | **0.9818** | **0.489** | **0.0373** | **0.9466** | **0.695** | **0.7330** | 0.7330 | 0.9456 | 0.9852 | 42.6% |
+| v622（上下文头+节点rank） | 0.9805 | 0.307 | 0.0239 | 0.9417 | 0.679 | 0.6173 | 0.6117 | 0.9287 | 0.9849 | 41.1% |
+
+- **v624 是唯一在所有指标上同时抬高的改变**（edge AP +67%、p@r90 ×2.2、node AP +16%、fake_inter +0.08）⇒ **派生+三角传递真的提高了曲线**（= 能力提升）。
+- v614/v620：**AUC 略降但 AP 升**（局部噪声换顶部排序）；v622：AUC 升而 AP 平（整体排序改善但顶部没用）→ 解释了它为何 All_fix 反而下降。
+- **事件类型拆**：1-B 的 edge AP 0.780 vs multi-B **0.384**（真边率仅 0.06% vs 0.51%）；AUC 却都 ≈0.99 ⇒ **瓶颈是顶部难负例的排序，不是整体排序**。
+- **时间维度上的关键推论**：此前所有"调阈值/加稀疏度"的收益都在同一条 PR 曲线上滑（所以可互相替代、叠加有限）；**只有抬高 AP 才算真进步**。
+
+### 5. 关键新发现：跨链假边是"同一 PV、不同次级顶点"
+- `fake_inter`（跨链、两端皆真值径迹）按**真值 PV** 拆：**134/134 全是 same_pv**（`diff_pv` 一条都没有）。
+- ⇒ "跨链假边"的两条径迹**确实属于同一个 primary vertex**，差别在**次级顶点/衰变链归属**。因此：
+  1. **PV 关联头对这类边无帮助** ⇒ 预测 v627（PV 软重叠注入）无效，**实测证实 14.07（−2.6%）**；
+  2. 缺的信息是"**哪一条次级顶点**"⇒ 可测量替代量应为**两径迹次级顶点一致性**（联立顶点 z/χ²/飞行距离），而非 IP/PV 家族；
+  3. 修正此前表述："去掉连接**不同 PV** 的 track 的 edge" → 应为"去掉连接**不同次级顶点**的 edge（它们共享同一 PV）"。
+
+### 6. 下一步
+- 立刻：对 v621/v623/v626/v628/v629/v631 补 benchmark（判据：谁真正抬 AP）。
+- 新配方 **v633** = v632 配方 **去掉两个负项**（event_count 头、PV 重叠）+ **加 v624 的派生输入与三角传递**（唯一被证明能抬曲线的东西），60–80ep。
+- 流程规范：① 新方案只报"bench_auc.csv 哪几个字段变好"；若 AUC/AP 未动而只有 All_fix 升，明确标注"工作点移动"。② 所有对比必须写明 (ckpt 口径, thr)。③ eval 一律用 `submit_eval_batch.sh` 合并成一个 job（`-wt mid` 会被无限期饿死，用 long）。
+
+---
+
+## 2026-09-25 ~ 09-27：非剪枝轴 benchmark + 代码/物理 bug 审计（定版）
+
+### 7. 非剪枝轴 benchmark（v2，取代 §4 的 v1 表）
+`analyze_prune_loss.py` 增了三条**非剪枝轴**：① LCA 4 类头（类1−类0 二分类口径）AUC/AP；② 真值链**碎裂度**（并查集只连"存活节点 + 存活边"）；③ 节点头 AP（原表也有）。对 v601/v623/v624/v628/v631 各 200 事件重跑，累积 `report_figs/bench_auc.csv`；旧表存档 `report_figs/bench_auc_v1_prune_only.csv`。
+
+| tag | edge_auc | edge_ap | p@r90 | node_ap | fake_inter | lca_auc | lca_ap | 链存活(点+边) | 全点存活 | 单连通 | mean_comp |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| v601 ep19 | 0.9683 | 0.3584 | 0.0132 | 0.6523 | 0.6268 | 0.9659 | 0.3523 | 39.10% | 39.10% | 75.94% | 0.759 |
+| **v623 ep19** | 0.9765 | **0.4397** | **0.0270** | 0.6655 | **0.7196** | 0.9765 | **0.4411** | 47.22% | 47.22% | 75.69% | 0.757 |
+| v624 ep09 | 0.9766 | 0.3462 | 0.0210 | 0.6751 | 0.6369 | **0.9767** | 0.3540 | 34.65% | 34.65% | 74.80% | 0.748 |
+| v628 ep13 | 0.9754 | 0.4211 | 0.0197 | **0.7152** | 0.6994 | 0.9733 | 0.3872 | 43.24% | 43.24% | 75.68% | 0.757 |
+| v631 ep10 | **0.9418** | 0.3903 | **0.0069** | 0.6902 | 0.6436 | **0.9480** | 0.3889 | 44.36% | 46.62% | **79.70%** | **0.820** |
+
+- 定义：**链存活** = 该真值链的**所有点 + 所有真值边**都过 thr；**全点存活** = 只要求所有点；**单连通** = 存活点+存活边构成恰好 1 个连通分量；**mean_comp** = 每条链平均的存活连通分量数（全被剪掉时为 0，故 <1）。
+
+**回答"v631 All_fix 最高（24.46）是不是真进步"：不是，是工作点更宽。**
+- v631 的**边曲线三项全面垫底**（edge_auc 0.9418 / edge_ap 0.3903 / p@r90 0.0069），**LCA 头也最差**（0.9480）；
+- 但它同时**保留的点最多**（全点存活 46.62%、单连通 79.70%、mean_comp 0.820 均为最高；平均存活占比 65.5% vs v601 57.6%）⇒ 重建能解出的真值链更多 ⇒ All_fix 高。
+- 即 **v631 的优势 = 召回/工作点移动**，与 §3 记录的"`none_iso` 掉到 43–52%"是同一件事的两面，**不是曲线抬高**。
+- 真正抬高曲线的仍是：**v623**（edge_ap 0.4397、lca_ap 0.4411 最高）、**v628**（node_ap 0.7152 最高）、**v624**（node_ap 0.6751、edge/lca AUC 最高）。
+- 另：v631 的 `fake_inter` 仍**全是 same_pv**（无 diff_pv 条目），第三次坐实 §5。
+
+### 8. 代码 + 物理 bug 审计（2026-09-26）
+**已修 4 处**（随 v639 生效；已在跑的 v632/633/635/636/637 启动时已加载旧代码，故不受影响）：
+
+1. [weights_calculator.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/data_loader/weights_calculator.py#L47-L48) —— `pv_asso` 正/负计数用 `=` 而非 `+=`，会把累加值**覆盖成"最后一个事件"的计数**，使**核心任务 PV 关联头**的 pos_weight 被单事件带偏（同函数 `frag`/`FT` 都是 `+=`，唯此处写错）。→ 改 `+=`。
+2. [lightning_helper.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/lightning_module/lightning_helper.py#L65) + [dfei_lightning_module.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/lightning_module/dfei_lightning_module.py#L1286-L1287) —— `chain_contrast` 损失（权重 0.5 **且可为负**）**从不落日志**，combined_loss 无法分项复核。→ 登记进 trn_log；实测 v639 step0/1 = **−0.912 / −1.21**（确为负值，此前完全不可见）。
+3. [dfei_lightning_module.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/lightning_module/dfei_lightning_module.py#L1083-L1088) —— `der_input`（派生特征）算失败时**静默降级**：适配器仍在但没输入，却照常出结论（最危险的静默失效，曾让 v636 首次冒烟被维度 assert 拦下）。→ 训练侧改 `raise`，推理侧仍容忍。
+4. [exec_lightning.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/lightning_module/exec_lightning.py#L114-L119) —— 训练自带 test 用**末轮 in-memory 权重**，而下游独立 eval（`get_bis_model`）用 **val_combined_loss 最小的 best ckpt**，两口径不可比（v614 差 2.5pp）。→ 统一改 `ckpt_path="best"`，不可用则显式打印并回退。
+
+**高危、未修（留待后续版本）**
+- `b2_cut = 0.85` 与推理 `thr = 0.95` **不对齐**（B2 分支选取阈值与剪枝阈值不同源）。
+- 链匹配 [reconstruction.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/reconstruction/reconstruction.py#L662-L699) "遇到第一条部分重叠就 break" → 潜伏**顺序依赖**（同事件换 track 顺序结果可能变）。
+
+**中危（记录在案）**
+- `trdist = sqrt((x1−x2)²+(y1−y2)²)`，但 `x_prime = np.random.randn(*z_prime.shape)`（[quantity_calculation.py](file:///lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/calculator/quantity_calculation.py#L71-L85)）⇒ trdist 是**随机轴投影**，跨预处理不可复现，**须改确定性**（报给 yukai）。
+- node/edge 损失**逐 4 个 GN block 累加**（`loss["t_nodes"] += …`）⇒ 有效权重 ×4；edge 项占 combined 65–70%。
+- `combined_loss` 非有限时静默置 0；十余处 `try/except` 静默降级。
+- `1B/2B` 分档实为"每事件链数"；`B_id` 恒 0；`part_reco` 未做"优先精确匹配"。
+
+**已排除的假警报（勿重复排查）**
+- `FromSameAssociatedPV_reco` / 节点 `xProd…` / `log_minIP` 全是 `_reco` 重建量，**不是**真值；
+- `use_pid=true` 喂的是 RICH PID 概率，**不是**真 PID；
+- `ft` 头在 DFEI **未构建**（且其注释写反：应为 0=bbar / 1=background / 2=b，报给 yukai）；
+- 三个新模块（`line_graph_attn` / 派生特征 / PV 重叠 carry）审计**正确**：事件隔离严格、top-k 确定性、`k=0` 与旧实现逐位一致、carry 单图、适配器真零初始化。
+- **更正我上一轮的 LCA 误判**：曾据 `y_LCA = batch[TT].y` 且 `.y` 为 uint8，断言"4 类头只喂 0/1 标签"。实测 3 个 batch 的 y 计数 class0=352040 / class1=332 / class2=358 / class3=8 ⇒ `y` **就是** 4 类 TopoLCA 分数，**无此 bug**（此前结论作废）。
+
+### 9. 固定分母 N_total 固化（原始测量）
+- 新增 [eval_CERN_0904_noprune.yaml](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/config_files/eval_CERN_0904_noprune.yaml)（0904 / `inclusive_00342451` / 20 文件 / `thr=−1` 全保留），用 [compute_n_total.py](file:///lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/wmpgnn/analysis/compute_n_total.py) 在**未剪枝完整图**上只做真值解码（CPU、不加载模型）。
+- **实测 `N_total = 13255`，`events = 20000`**（逐 chunk 累积见 `logs/compute_n_total_0904_inc51.log`）⇒ §0 的固定分母 13255 **从此有原始测量证据**。
+- 运行注意：须先 `export PATH=$HOME/miniconda3/envs/dfei/bin:$PATH` 且 `export PYTHONPATH=<repo>:$PYTHONPATH`，否则报 `ModuleNotFoundError`。
+
+### 10. in-flight（2026-09-27 21:0x）
+- 训练：v632 ep46/60、v633 ep20、v635 ep20、v636 ep21、v637 ep18。
+- **v639**（= v633 配方 + 上列修复 2/3；其自报指标从本版起为 **best-ckpt 口径**）**卡在坏卡 `GPU-e2ac1338` 上反复重排**（retry 11/1000，每次仍是同一 UUID）——正是脚本注释里记录的"被钉回同一张坏卡"症状。**根因是资源饱和而非代码 bug**：好卡被占（v632 占 gpu02 另一张，v633/635/636/637 占满 gpu05），新 GPU 作业只能落到 gpu02 的坏卡。**决策（用户）**：不动在跑的作业，让 v639 继续每分钟轮询，待好卡释放（最可能是 v632 结束）自动开跑。
