@@ -8,6 +8,7 @@ from wmpgnn.model.blocks.hetero_global_block import HeteroGlobalBlock
 from wmpgnn.model.blocks.hetero_node_block import HeteroNodeBlock
 from wmpgnn.model.mlp_class import create_mlp
 from wmpgnn.model.context_prune import ContextPruneHead
+from wmpgnn.model.line_graph_attn import LineGraphAttention
 from wmpgnn.util.pruners import *
 
 
@@ -141,6 +142,61 @@ class HeteroGraphNetwork(pl.LightningModule):
             torch.nn.init.zeros_(self._edge_der_adapter.bias)
             print(f"[der_input] 边剪枝 MLP 追加 {_ke} 维派生输入 (零初始化适配器)")
 
+        # ==== [2026-09-24] 三个并行方向 (各自独立开关, 默认全关 -> 与旧模型逐位等价) ====
+        # (1) pv_overlap_inject: 把 PV 关联头给出的"两条径迹是否同 PV"软重叠喂进 tt 剪枝 MLP 输入。
+        #     直接打通"跨 PV 的边"这条通道 (剪枝此前完全看不到 PV 关联头的信息)。
+        #     PV 头 logits 在同一 block 内晚于 tt 计算, 故用**前一个 block** 的 logits (延迟一层),
+        #     经零初始化适配器加入 tt 边表征。要求边缘不变 (edge_prune=False)。
+        # (2) event_bias: 事件级自适应偏置 —— 事件内节点表征均值 -> 一个标量, 加到最后一层的
+        #     点/边剪枝 logits 上, 让"该事件有多挤"自行决定剪枝工作点 (端到端, 无标签)。
+        # (3) event_count_head: 事件级计数辅助头 (预测该事件有几条真值链), 迫使全局表征编码事件结构。
+        _ekey_tt = ('tracks', 'to', 'tracks')
+        _edim = edge_configs[_ekey_tt]["layers"][-1] if _ekey_tt in edge_configs \
+            else self._mlp_forward["layers"][-1]
+        _ndim = node_configs["tracks"]["layers"][-1]
+
+        self._pv_inject = bool(config.get("pv_overlap_inject", False))
+        self._pv_ov_adapter = None
+        self._pv_ov_cache = None      # 本 block 算出的 (递给下一个 block, 由外层 forward 转交)
+        self._pv_ov_in = None         # 上一个 block 在同一次 forward 内算出的 (本 block 消耗)
+        if self._pv_inject:
+            self._pv_ov_adapter = torch.nn.Linear(3, _edim)
+            torch.nn.init.zeros_(self._pv_ov_adapter.weight)
+            torch.nn.init.zeros_(self._pv_ov_adapter.bias)
+            print("[pv_inject] tt 剪枝 MLP 追加 PV 软重叠 3 维 (零初始化适配器, 用前一层 logits)")
+
+        self._evt_bias_on = bool(config.get("event_bias", False))
+        self._evt_bias = None
+        if self._evt_bias_on:
+            self._evt_bias = torch.nn.Linear(_ndim, 1)
+            torch.nn.init.zeros_(self._evt_bias.weight)
+            torch.nn.init.zeros_(self._evt_bias.bias)
+            print("[event_bias] 事件级自适应剪枝偏置启用 (零初始化)")
+
+        self._evt_count_on = bool(config.get("event_count_head", False))
+        self._evt_count = None
+        self._evt_count_logits = None
+        self._last_node_emb = None
+        if self._evt_count_on:
+            self._evt_count = torch.nn.Linear(_ndim, 4)   # 0/1/2/>=3 条真值链
+            print("[event_count] 事件级链数辅助头启用")
+
+        # ==== [2026-09-26] tt 边图 (line-graph) 注意力: 让 tt 边之间互相传消息 ====
+        # 动机: 三角传递性 —— 若边 (i,j) 与 (j,k) 都很强, 则 (i,k) 通常也应为强边 (同一条链)。
+        # 与 pv_overlap_inject 同位置: 挂在**最后一个 GN block** (context_last),
+        # 在边剪枝 MLP 打分之前对 tt 边做 line_graph_rounds 轮注意力; 输出经零初始化投影
+        # 残差加回边表征 -> 未训练时严格恒等 (关闭开关时逐位一致)。
+        self._line_attn = None
+        self._line_active = False
+        if context_last and bool(config.get("line_graph_attn", False)):
+            self._line_attn = LineGraphAttention(
+                _edim,
+                n_rounds=int(config.get("line_graph_rounds", 1)),
+                n_heads=int(config.get("line_graph_heads", 4)),
+                hidden=int(config.get("line_graph_hidden", 32)),
+                max_neighbors=int(config.get("line_graph_max_neighbors", 32)),
+            )
+
     def _b2_mask(self, w):
         """B2 可微软掩码: mask = σ((w - cut) / τ), 返回与 w 同形的连续掩码 [0,1]。"""
         tau = max(float(self._b2_tau), 1e-3)
@@ -158,6 +214,18 @@ class HeteroGraphNetwork(pl.LightningModule):
                 _de = getattr(graph[edge_type], "der_edges", None)     # 派生输入 (可选)
                 if self._edge_der_adapter is not None and _de is not None:
                     _e_in = _e_in + self._edge_der_adapter(_de)
+                # (1) PV 软重叠注入: 用**上一个 block 在同一次 forward 内**算出的 (E_tt,3) 特征
+                if (self._pv_ov_adapter is not None and edge_type == ('tracks', 'to', 'tracks')
+                        and self._pv_ov_in is not None
+                        and self._pv_ov_in.shape[0] == _e_in.shape[0]):
+                    _e_in = _e_in + self._pv_ov_adapter(
+                        self._pv_ov_in.to(dtype=_e_in.dtype, device=_e_in.device))
+                # (4) [2026-09-26] tt 边图注意力: 共享端点的边之间传消息 (仅最后一个 block)。
+                #     在边剪枝 MLP 打分之前精修边表征; 零初始化投影 -> 起始恒等。
+                #     graph_batch = 每条边的事件 id (由 sender 节点取), 用于事件隔离。
+                if (self._line_attn is not None and edge_type == ('tracks', 'to', 'tracks')
+                        and getattr(self, "_line_active", False)):
+                    _e_in = self._line_attn(_e_in, node_input[edge_type].edge_index, graph_batch)
                 self.edge_logits[edge_type] = self._edge_mlps[edge_type](_e_in, graph_batch)
                 self.edge_weights[edge_type] = self._sigmoid(self.edge_logits[edge_type])
                 # 方向头 (剪枝 MLP 的第二输出), 只在最后一个 block 取值
@@ -165,6 +233,20 @@ class HeteroGraphNetwork(pl.LightningModule):
                     self.edge_dir_logits[edge_type] = self._edge_mlps[edge_type].dir_logits
             else:
                 self.edge_weights[edge_type] = torch.ones((graph[edge_type].edges.shape[0], 1)).to(self.device)
+
+        # (1) 缓存本 block 的 PV 关联软重叠, 供下一个 block 的 tt 剪枝使用
+        if self._pv_ov_adapter is not None:
+            _tpv = ('tracks', 'to', 'pvs')
+            _tt = ('tracks', 'to', 'tracks')
+            if _tpv in self.edge_logits and _tt in self.edge_logits:
+                from wmpgnn.model.pv_overlap import pv_same_soft
+                _n_tr = node_input['tracks'].x.shape[0]
+                _b = node_input['tracks'].batch if 'batch' in node_input['tracks'] \
+                    else torch.zeros(_n_tr, dtype=torch.long, device=node_input['tracks'].x.device)
+                self._pv_ov_cache = pv_same_soft(self.edge_logits[_tpv],
+                                                 node_input[_tpv].edge_index,
+                                                 node_input[_tt].edge_index,
+                                                 int(_n_tr), _b)
 
         # ==== B2: 训练时对边权重施加软掩码, 模拟剪枝后的图 (消息传递在软剪枝图上进行) ====
         # 仅在最后一个 GN block 启用 (与推理时剪枝作用于最终输出权重的位置对齐)
@@ -214,6 +296,34 @@ class HeteroGraphNetwork(pl.LightningModule):
                 self.node_weights["tracks"] = self._sigmoid(s_node_new)
                 self.edge_logits[tt] = s_edge_new
                 self.edge_weights[tt] = self._sigmoid(s_edge_new)
+
+        # ==== [2026-09-24] (2) 事件级自适应剪枝偏置 + (3) 事件级链数辅助头 (仅最后一个 block) ====
+        # 事件级表征 = 事件内 tracks 节点表征均值; 用它预测标量偏置/链数。
+        # 偏置与计数头都是零初始化/无真值输入 -> 起点恒等, 且偏置端到端学不依赖真值。
+        if (self._evt_bias is not None or self._evt_count is not None
+                or getattr(self, "_stash_emb", False)) \
+                and getattr(self, "_evt_active", False) \
+                and ("tracks" in self.node_logits) and self._use_node_weights:
+            _tt = ('tracks', 'to', 'tracks')
+            _x = global_input["tracks"].x
+            _b = global_input["tracks"].batch
+            _n_ev = int(_b.max().item()) + 1
+            _sum = torch.zeros(_n_ev, _x.shape[-1], device=_x.device, dtype=_x.dtype).index_add(0, _b, _x)
+            _cnt = torch.bincount(_b, minlength=_n_ev).clamp_min(1).to(_x.dtype).unsqueeze(1)
+            _evt = _sum / _cnt                                    # (n_ev, D) 事件级表征
+            self._last_node_emb = _x                              # 供链级对比损失使用
+            if self._evt_bias is not None:
+                _bias = self._evt_bias(_evt)                      # (n_ev, 1)
+                _nl = self.node_logits["tracks"]
+                self.node_logits["tracks"] = _nl + _bias[_b].to(_nl.dtype)
+                self.node_weights["tracks"] = self._sigmoid(self.node_logits["tracks"])
+                if _tt in self.edge_logits:
+                    _el = self.edge_logits[_tt]
+                    _eb = _b[global_input[_tt].edge_index[0]]
+                    self.edge_logits[_tt] = _el + _bias[_eb].to(_el.dtype)
+                    self.edge_weights[_tt] = self._sigmoid(self.edge_logits[_tt])
+            if self._evt_count is not None:
+                self._evt_count_logits = self._evt_count(_evt)    # (n_ev, 4) 链数分类
 
         # ==== B2: 节点权重软掩码 (全局聚合前, 与边掩码同理, 模拟剪枝后的节点集) ====
         if self._b2 and self._b2_active and self.training:

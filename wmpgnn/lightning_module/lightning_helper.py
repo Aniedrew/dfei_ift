@@ -59,6 +59,10 @@ def init_logs(configs, mode="train"):
         # 方案5: 链内 LCA 一致性辅助损失日志
         if loss_config.get("chain_lca_loss", False):
             log["chain_lca_loss"] = []
+        # [2026-09-26 FIX] chain_contrast 损失此前从不落日志: 它是权重 0.5 的项且可为负,
+        # 不登记就无法从分项复核 combined_loss (v633/v635/v637 都开了它)。
+        if loss_config.get("chain_contrastive_weight", 0):
+            log["chain_contrast_loss"] = []
 
         # 链级 min-pooling recall 损失日志 (2026-09-13)
         if loss_config.get("chain_recall_weight", 0.0):
@@ -124,7 +128,9 @@ def init_loss(device):
             "chain_select": torch.tensor(0., device=device),
             "source": torch.tensor(0., device=device),
             "chain_lca": torch.tensor(0., device=device),
-            "pv_cluster": torch.tensor(0., device=device)}
+            "pv_cluster": torch.tensor(0., device=device),
+            "evt_count": torch.tensor(0., device=device),        # [2026-09-24] 事件级链数辅助头
+            "chain_contrast": torch.tensor(0., device=device)}   # [2026-09-24] 链级对比损失
     return loss
 
 

@@ -92,6 +92,9 @@ class DFEI_HGNN(pl.LightningModule):
         data = _reattach(data)
         latent = data.clone()
 
+        # [2026-09-24] PV 软重叠必须在**同一次 forward 内**从上一个 block 传到下一个 block
+        # (早先版本让 block 读自己上一次 forward 的缓存 -> 第 2 步就 backward 到已释放的计算图而崩)。
+        self._pv_ov_carry = None
         for b, core in enumerate(self._blocks):
             # ==== B2: 仅最后一个 GN block 模拟剪枝 (与推理剪枝作用于最终输出权重的位置一致) ====
             core._b2_active = b == (len(self._blocks) - 1) and bool(getattr(self, "_b2_enable", True))
@@ -99,7 +102,13 @@ class DFEI_HGNN(pl.LightningModule):
             core._context_active = b == (len(self._blocks) - 1)
             # ==== [2026-09-23] 剪枝 MLP 的方向头同样只在最后一个 block 取值 ====
             core._dir_active = b == (len(self._blocks) - 1)
+            # ==== [2026-09-24] 事件级自适应偏置 / 事件级计数头 / 节点表征暂存 也只在最后一个 block ====
+            core._evt_active = b == (len(self._blocks) - 1)
+            # ==== [2026-09-26] tt 边图注意力同样只在最后一个 block 生效 ====
+            core._line_active = b == (len(self._blocks) - 1)
+            core._pv_ov_in = self._pv_ov_carry       # 上一 block 在同一次 forward 里算出的 PV 软重叠
             data = core(data, init_graph_pid)
+            self._pv_ov_carry = getattr(core, "_pv_ov_cache", None)   # 递给下一个 block
             data = _reattach(data)      # block 可能重建 HeteroData, 派生输入需重挂
             if b < (len(self._blocks) - 1):
                 data = hetero_graph_concat(latent, data)

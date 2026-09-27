@@ -111,7 +111,7 @@ def chain_recall_loss(node_logits, edge_logits, y, edge_index, n_nodes, thr=0.5,
 
 
 
-def edge_rank_loss(logits, y, edge_index, node_ev, n_neg=64, margin=1.0):
+def edge_rank_loss(logits, y, edge_index, node_ev, n_neg=64, margin=1.0, mode="hinge"):
     """边头 pairwise ranking 损失 (对准 precision/AUC, 而非被 pos_weight 主导的 BCE)。
 
     依据 (2026-09-22 诊断, v601/0904):
@@ -128,6 +128,13 @@ def edge_rank_loss(logits, y, edge_index, node_ev, n_neg=64, margin=1.0):
 
     已排除的同族尝试: 结构先验 support(i,j)=max_k min(s_ik,s_kj) 正则 (罚"高分低支持"的负边)
     在 v601/0904 预检 AUC=0.53 (纯噪声) —— 完全图上对 n 个候选取 max 会把信号抹平。
+
+    mode (配置键 edge_rank_mode):
+      - "hinge" (默认): 逐正边-负边配对的 relu(margin + s_neg - s_pos) 均值, 与旧行为逐位一致。
+      - "infonce": listwise。每事件把全部正边 {s_pos} 与最难 n_neg 条负边 {s_neg} 并为候选集,
+        最大化正类在该候选集中的概率质量 (InfoNCE 形式, 数值稳定用 logsumexp):
+            L_evt = -(logsumexp(s_pos) - logsumexp(concat([s_pos, s_neg])))
+        对事件取均值。正类率极低 (0.135%) 时 listwise 直接约束"顶部难负例"的相对次序。
     """
     s = logits.squeeze(-1)
     yb = (y.squeeze(-1) > 0.5)
@@ -140,7 +147,11 @@ def edge_rank_loss(logits, y, edge_index, node_ev, n_neg=64, margin=1.0):
             continue
         if neg.numel() > n_neg:
             neg = neg.topk(n_neg).values                     # 只跟最难的负边比
-        v = F.relu(margin + (neg.unsqueeze(0) - pos.unsqueeze(1))).mean()
+        if mode == "infonce":
+            cand = torch.cat([pos, neg])                     # logsumexp 自带 max 平移, 数值稳定
+            v = -(torch.logsumexp(pos, 0) - torch.logsumexp(cand, 0))
+        else:
+            v = F.relu(margin + (neg.unsqueeze(0) - pos.unsqueeze(1))).mean()
         tot = v if tot is None else tot + v
         cnt += 1
     return (tot / cnt) if cnt else None
@@ -176,7 +187,7 @@ def track_minip(batch):
     return out.scatter_reduce(0, tt_pv.edge_index[0].long(), v, reduce="amin", include_self=True)
 
 
-def derive_pruning_features(batch, nc, ns, use_triangle=False):
+def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False):
     """从**原始**节点/边特征现算剪枝 MLP 的派生输入 (不重产数据)。
 
     动机: 剪枝 MLP 的输入只有 8 维节点特征 / 5 维边特征, 缺的正是
@@ -188,6 +199,7 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False):
     节点 7 维: [pT, |p|, minIP, pT-rank, isolation, n_tracks/100, npvs/10]
     边   7 维: [ΔR, m(ππ), |q_i+q_j|, ΔpT_canon, ΔIP_canon, iso_pair, Δz_proj_canon]
               (+2 若 use_triangle: [三角传递 support, 局域亲和度行内 rank])
+              (+3 若 use_vertex:   [zcpa/100, flight/100, collinearity], 见下方 derived_vertex)
     约定: "上游" = minIP 更小 (更贴 PV), 与 edge_dz_ip_canon 的定向一致。
     nc/ns: 原特征名 -> 归一化 center/scale (用于反归一化, 只求量级合理)。
     """
@@ -208,6 +220,18 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False):
         0, tpv.edge_index[0].long(), tpv.edges.reshape(-1), reduce="amin", include_self=True)
     fin = torch.isfinite(ip)
     ip = torch.where(fin, ip, ip[fin].max() if bool(fin.any()) else torch.zeros((), device=dev))
+    # ==== [2026-09-26] derived_vertex: 每条 track 关联 PV 的 z (minIP 最小的 PV) ====
+    # tr-pv 边特征 log_minIP 单调 -> argmin 在归一化/物理空间一致; PV 的 z 用 zPV_reco 反归一化。
+    # 无 tr-pv 关联的 track 回退到自身生产顶点 z (flight 仍有限; 逐 track 局部量, 不跨事件)。
+    _snd, _rcv = tpv.edge_index[0].long(), tpv.edge_index[1].long()
+    _ipv = tpv.edges.reshape(-1)
+    _bestip = torch.full((X.shape[0],), float("inf"), device=dev, dtype=_ipv.dtype).scatter_reduce(
+        0, _snd, _ipv, reduce="amin", include_self=True)
+    _is_best = (_ipv == _bestip[_snd])
+    _zpv = batch["pvs"].x[:, 2] * float(ns.get("zPV_reco", 1.0)) + float(nc.get("zPV_reco", 0.0))
+    z_pv_assoc = zp.clone()
+    if bool(_is_best.any()):
+        z_pv_assoc[_snd[_is_best]] = _zpv[_rcv[_is_best]]
     nb = batch["tracks"].batch if "batch" in batch["tracks"] else torch.zeros(
         X.shape[0], dtype=torch.long, device=dev)
     n_ev = int(nb.max()) + 1
@@ -278,6 +302,43 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False):
     cols = [dR, mpipi / 1000., (q[a] + q[b]).abs(), dpT / 1000., dIP / 10., rk_dR, dzp / 10.]
     if use_triangle:
         cols += [sup, rk_aff]
+    if use_vertex:
+        # ==== [2026-09-26] 次级顶点一致性 (边级 3 维, 配置键 derived_vertex) ====
+        # 每条 tt 边两端径迹参数化为直线 P_t(τ) = A_t + τ·u_t (过生产顶点 A, 方向=动量单位向量)。
+        # 求两条直线的公共垂足 (closest-approach): 单位方向 => a=c=1,
+        #   cosθ=u_a·u_b, denom=1-cos²θ, τ_a=(cosθ·e-d)/denom, τ_b=(e-cosθ·d)/denom
+        #   (d=u_a·w0, e=u_b·w0, w0=A_a-A_b); 平行 (denom→0) 时垂足病态 -> 显式掩码回退。
+        # 三个量 (均逐边局部, 只用该边两端径迹及其 PV 关联 -> 天然按事件隔离, 不跨事件):
+        #   1) zcpa: 公共垂足 (两垂足中点) 的 z (平行时回退到两生产顶点 z 的中点);
+        #   2) flight: |zcpa - z_PV_assoc|, PV 取 minIP 更小(上游)那端的关联 PV (次级顶点飞行距离代理);
+        #   3) collinearity: 横向接近度 d_perp/(|Δz_两端生产顶点|+1mm)。
+        #      注: 用两端**生产顶点**的 z 分离作纵向尺度, 而非两垂足的 z 分离 dz_sep —— 后者对
+        #      近共线径迹近乎退化 (本 batch 中位数 ~0.014mm) -> 比值病态、26% 样本饱和 (见报告实测)。
+        A3 = torch.stack([xp[a], yp[a], zp[a]], 1)
+        B3 = torch.stack([xp[b], yp[b], zp[b]], 1)
+        ua, ub = u[a], u[b]
+        w0 = A3 - B3
+        cab = (ua * ub).sum(-1)
+        dd = (ua * w0).sum(-1)
+        ee = (ub * w0).sum(-1)
+        denom = 1.0 - cab * cab
+        par = denom.abs() < 1e-3                               # |cosθ|>~0.9995: 近平行, 垂足病态
+        denom_s = torch.where(par, torch.ones_like(denom), denom)
+        ta = ((cab * ee - dd) / denom_s).clamp(-1e4, 1e4)      # 数值保险: 防近奇异处巨型 τ
+        tb = ((ee - cab * dd) / denom_s).clamp(-1e4, 1e4)
+        F1 = A3 + ta.unsqueeze(1) * ua                         # 线 a 上的垂足
+        F2 = B3 + tb.unsqueeze(1) * ub                         # 线 b 上的垂足
+        zcpa = torch.where(par, 0.5 * (zp[a] + zp[b]), 0.5 * (F1[:, 2] + F2[:, 2]))
+        z_assoc = torch.where(ip[a] <= ip[b], z_pv_assoc[a], z_pv_assoc[b])
+        flight = (zcpa - z_assoc).abs()
+        # 两直线最近距离: 非平行用两垂足间距; 平行(垂足不唯一)用 w0 的垂直分量 (良态)
+        d_par = torch.linalg.norm(w0 - dd.unsqueeze(1) * ua, dim=1)
+        d_perp = torch.where(par, d_par, torch.linalg.norm(F1 - F2, dim=1))
+        dz_pair = (zp[a] - zp[b]).abs()
+        collin = d_perp / (dz_pair + 1.0)
+        # 归一到合理量级 (与既有派生列一致) + 清 NaN/inf 并设硬上界
+        for _v in (zcpa / 100.0, flight / 100.0, collin):
+            cols.append(torch.nan_to_num(_v, nan=0.0, posinf=0.0, neginf=0.0).clamp(-50.0, 50.0))
     edge_der = torch.stack(cols, -1)
     return node_der, edge_der
 
@@ -497,6 +558,11 @@ class DFEILightningModule(L.LightningModule):
         self.edge_rank_w = float(self.configs.get("edge_rank_weight", 0.0))
         self.edge_rank_nneg = int(self.configs.get("edge_rank_nneg", 64))
         self.edge_rank_margin = float(self.configs.get("edge_rank_margin", 1.0))
+        # [2026-09-26] ranking 损失形式: "hinge"(默认, 与旧行为逐位一致) | "infonce"(listwise)
+        self.edge_rank_mode = str(self.configs.get("edge_rank_mode", "hinge"))
+        if self.edge_rank_mode not in ("hinge", "infonce"):
+            raise ValueError(
+                f"edge_rank_mode 只能取 'hinge' 或 'infonce', 得到 {self.edge_rank_mode!r}")
         # ==== [2026-09-23] delta_z0 方向处理 / 方向头 (leak 修复实验) ====
         # 背景: 0702 用 np.sort(ParticleIndex) 决定边方向, 使唯一反对称特征 delta_z0 的符号
         # 变成"单边且与真值相关"的量; 7 月模型因此学到一条不可迁移的捷径 (反事实: 抹掉符号
@@ -510,6 +576,12 @@ class DFEILightningModule(L.LightningModule):
         self.dz_pvz_canon = bool(self.configs.get("edge_dz_pvz_canon", False))
         self.dz_abs = bool(self.configs.get("edge_dz_abs", False))
         self.dir_head_w = float(self.configs.get("dir_head_weight", 0.0))
+        # ==== [2026-09-24] 两个新方向 (各自独立开关, 默认 0 -> 与旧行为逐位一致) ====
+        # event_count_weight: 事件级链数辅助头 (预测该事件有几条真值链)
+        # chain_contrastive_weight: 链级对比损失 (在嵌入空间按真值链拉近/推远)
+        self.evt_count_w = float(self.configs.get("event_count_weight", 0.0))
+        self.chain_contrast_w = float(self.configs.get("chain_contrastive_weight", 0.0))
+        self.chain_contrast_tau = float(self.configs.get("chain_contrastive_tau", 0.1))
         self.dz_c, self.dz_s = 0.0, 1.0
         self._nc, self._ns = {}, {}
         _nd = self.configs.get("dz_norm_dict", "")
@@ -520,15 +592,30 @@ class DFEILightningModule(L.LightningModule):
             self.dz_c = self._nc.get("delta_z0_reco", 0.0)
             self.dz_s = self._ns.get("delta_z0_reco", 1.0)
             print(f"[dz] 归一化字典 {_nd}: dz center={self.dz_c:.3f} scale={self.dz_s:.3f}")
-        # ==== [2026-09-23] 剪枝 MLP 的派生输入 (物理派生量 / 三角传递性) ====
+        # ==== [2026-09-23] 剪枝 MLP 的派生输入 (物理派生量 / 三角传递性 / 次级顶点一致性) ====
         # 由 derive_pruning_features 现算, 经**零初始化适配器**注入剪枝 MLP (起点与旧模型等价)。
         self.der_prune = bool(self.configs.get("derived_prune", False))
         self.der_tri = bool(self.configs.get("derived_triangle", False))
+        # [2026-09-26] derived_vertex: 边级 3 维"次级顶点一致性" (zcpa/flight/collinearity)
+        self.der_vertex = bool(self.configs.get("derived_vertex", False))
         self.node_der_dim = 7 if self.der_prune else 0
-        self.edge_der_dim = (7 + (2 if self.der_tri else 0)) if self.der_prune else 0
+        self.edge_der_dim = (7 + (2 if self.der_tri else 0) + (3 if self.der_vertex else 0)) \
+            if self.der_prune else 0
         if self.der_prune:
+            # 维度必须与 GNblocks 里适配器的输入维严格一致 (否则前向 matmul 报错且难定位)
+            _kn_cfg = int(self.configs_gn.get("extra_node_dim", 0))
+            _ke_cfg = int(self.configs_gn.get("extra_edge_dim", 0))
+            assert self.node_der_dim == _kn_cfg, (
+                f"派生输入维度不一致: derive_pruning_features 构造节点 {self.node_der_dim} 维, "
+                f"但 GNblocks.extra_node_dim={_kn_cfg} (derived_prune={self.der_prune})")
+            assert self.edge_der_dim == _ke_cfg, (
+                f"派生输入维度不一致: 边 {self.edge_der_dim} 维 = 7(基础)"
+                f"+{2 if self.der_tri else 0}(derived_triangle)"
+                f"+{3 if self.der_vertex else 0}(derived_vertex), "
+                f"但 GNblocks.extra_edge_dim={_ke_cfg}")
             print(f"[der_input] 派生输入启用: 节点 {self.node_der_dim} 维 / 边 {self.edge_der_dim} 维"
-                  f"{' (含三角传递)' if self.der_tri else ''}")
+                  f"{' (含三角传递)' if self.der_tri else ''}"
+                  f"{' (含次级顶点一致性)' if self.der_vertex else ''}")
         # 节点侧 pairwise ranking (边侧 ranking 已验证 +12.7%, 点的正类率高得多, 值得搬到点侧)
         self.node_rank_w = float(self.configs.get("node_rank_weight", 0.0))
         self.node_rank_nneg = int(self.configs.get("node_rank_nneg", 64))
@@ -593,6 +680,11 @@ class DFEILightningModule(L.LightningModule):
             has_ta = any(k.startswith("model._track_attn.") for k in checkpoint.get("state_dict", {}))
             if not has_ta:
                 new_heads.append("track_attn")
+        # ==== [2026-09-26] tt 边图注意力 (新参数, 旧 ckpt 无) ====
+        if any("_line_attn." in k for k in self.state_dict()):
+            has_lg = any("_line_attn." in k for k in checkpoint.get("state_dict", {}))
+            if not has_lg:
+                new_heads.append("line_graph_attn")
         if new_heads:
             print(f"[heads] 旧 checkpoint 无 {new_heads} 头: "
                   "重置 optimizer/lr_scheduler 状态 (新头无历史动量, 从当前 lr 重新起步)")
@@ -621,7 +713,11 @@ class DFEILightningModule(L.LightningModule):
             # 前缀不固定 -> 用子串匹配纳入"新头缺参"白名单。
             miss = [k for k in cur if k not in state_dict
                     and (k.startswith(heads) or "_context_head." in k or "lin_dir." in k
-                         or "der_adapter." in k)]
+                         or "der_adapter." in k
+                         # [2026-09-24] 三个新模块 (同样挂在 GN block 内, 零初始化/新头 -> 允许缺失)
+                         or "_pv_ov_adapter." in k or "_evt_bias." in k or "_evt_count." in k
+                         # [2026-09-26] tt 边图注意力 (挂最后一个 GN block 内, 零初始化 -> 允许缺失)
+                         or "_line_attn." in k)]
             shape_mm = []
             for k in cur:
                 if k not in state_dict:
@@ -973,15 +1069,22 @@ class DFEILightningModule(L.LightningModule):
         # 从原始 px/py/pz/生产顶点/PV 关联现算, 经零初始化适配器注入剪枝 MLP (不重产数据)。
         if self.der_prune:
             try:
-                _nd_d, _ed_d = derive_pruning_features(batch, self._nc, self._ns, self.der_tri)
+                _nd_d, _ed_d = derive_pruning_features(batch, self._nc, self._ns, self.der_tri,
+                                                       use_vertex=self.der_vertex)
                 batch['tracks'].x_der = _nd_d
                 batch[('tracks', 'to', 'tracks')].der_edges = _ed_d
                 if mode == "train" and self.trn_log is not None and "der_stat" not in self.trn_log:
                     self.trn_log["der_stat"] = [0.0]
                     print(f"[der_input] 尺寸检查: 节点派生 {tuple(_nd_d.shape)} / 边派生 {tuple(_ed_d.shape)}"
-                          f" | 样例 边 [ΔR,m,|Σq|,ΔpT,ΔIP,iso,Δz]= "
+                          f" | 样例 边 [ΔR,m,|Σq|,ΔpT,ΔIP,rk,Δz"
+                          f"{',sup,rk_aff' if self.der_tri else ''}"
+                          f"{',zcpa,flight,collin' if self.der_vertex else ''}]= "
                           + " ".join(f"{x:+.2f}" for x in _ed_d[0].tolist()), flush=True)
             except Exception as _e:
+                # [2026-09-26 FIX] 训练时不允许静默降级: 派生特征算失败会退化成"没开 derived_prune"
+                # (适配器仍在但不生效) 却照常出结论, 属最危险的静默失效。推理侧可容忍。
+                if mode == "train":
+                    raise
                 print(f"[der_input] WARN: {type(_e).__name__}: {_e}", flush=True)
         # 保存原始轨迹动量 (px,py,pz, 归一化) —— model forward 会原地覆盖 tracks.x
         # 为 encoder 表征, mass head 的物理真值 (ππ 不变质量) 需在覆盖前取出。
@@ -1044,13 +1147,14 @@ class DFEILightningModule(L.LightningModule):
                 if mode == "test" and self.configs["plt_edges"]:
                     get_block_score(log, block.edge_weights[('tracks', 'to', 'tracks')].squeeze(), y_edges, i,
                                     var="edges")
-                # ==== [2026-09-22] v614: 边头 pairwise ranking 损失 (只在最后一个 block) ====
+                # ==== [2026-09-22] v614: 边头 pairwise/listwise ranking 损失 (只在最后一个 block) ====
                 if (self.edge_rank_w > 0 and mode == "train"
                         and i == len(self.model._blocks) - 1):
                     _rl = edge_rank_loss(_e_logits, y_edges,
                                          outputs[('tracks', 'to', 'tracks')].edge_index,
                                          batch['tracks'].batch,
-                                         n_neg=self.edge_rank_nneg, margin=self.edge_rank_margin)
+                                         n_neg=self.edge_rank_nneg, margin=self.edge_rank_margin,
+                                         mode=self.edge_rank_mode)
                     if _rl is not None:
                         loss["tt_rank"] = _rl
                 # ==== [2026-09-23] 节点侧 pairwise ranking (把边侧已验证的 +12.7% 搬到点侧) ====
@@ -1147,6 +1251,41 @@ class DFEILightningModule(L.LightningModule):
                 except Exception as _e:
                     print(f"[dir_head] WARN: {type(_e).__name__}: {_e}")
 
+        # ==== [2026-09-24] 事件级链数辅助头 + 链级对比损失 ====
+        # 真值链 id 直接来自 ft (0=b, 2=bbar, 1=background -> 背景置 -1)。
+        # 动机: (a) 边剪枝标签本质是"簇关系", 对比损失直接在嵌入空间按链拉近/推远,
+        #          属于"换目标函数"的新维度 (与调阈值/加特征这类同旋钮手段互补);
+        #       (b) 计数头迫使事件级表征编码"这事件有几条链", 为 K 路解码/事件自适应阈值提供依据。
+        if self.evt_count_w > 0 or self.chain_contrast_w > 0:
+            _blk = self.model._blocks[-1]
+            # 链级对比损失需要块的节点表征: 打开暂存开关 (幂等, 见 hetero_graph_network 的 _stash_emb)
+            if self.chain_contrast_w > 0 and not getattr(self, "_stash_set", False):
+                if hasattr(self, "model") and hasattr(self.model, "_blocks"):
+                    for _b in self.model._blocks:
+                        _b._stash_emb = True
+                    self._stash_set = True
+            if hasattr(batch['tracks'], 'ft'):
+                _ft = batch['tracks'].ft.long().to(self.device)
+                _bt = batch['tracks'].batch if 'batch' in batch['tracks'] else \
+                    torch.zeros(_ft.shape[0], dtype=torch.long, device=self.device)
+                _n_ev = int(_bt.max().item()) + 1
+                _cid = torch.where(_ft == 1, torch.full_like(_ft, -1), _ft)
+                _vv = _cid >= 0
+                if self.evt_count_w > 0 and getattr(_blk, "_evt_count_logits", None) is not None:
+                    _lab = torch.zeros(_n_ev, dtype=torch.long, device=self.device)
+                    if bool(_vv.any()):
+                        # 每事件的不同有效链 id 数 = 该事件的 B 数 (0/1/2, >=3 归到 3)
+                        _uniq = torch.unique(torch.stack([_bt[_vv], _cid[_vv]], 1), dim=0)
+                        _lab = torch.bincount(_uniq[:, 0], minlength=_n_ev).clamp(max=3).long()
+                    loss["evt_count"] = F.cross_entropy(_blk._evt_count_logits, _lab)
+                if self.chain_contrast_w > 0 and getattr(_blk, "_last_node_emb", None) is not None:
+                    from wmpgnn.lightning_module.chain_contrastive import chain_contrastive_loss
+                    loss["chain_contrast"] = chain_contrastive_loss(
+                        _blk._last_node_emb, _cid, _bt, tau=self.chain_contrast_tau)
+                    # [2026-09-26 FIX] 落日志: 此前该项从不记录, combined_loss 无法分项复核
+                    if mode == "train" and self.trn_log is not None and "chain_contrast_loss" in self.trn_log:
+                        self.trn_log["chain_contrast_loss"].append(float(loss["chain_contrast"]))
+
         # 权重可配 (默认 1/1/33 与旧行为完全一致); 见 __init__ 中"剪枝损失再平衡"注释
         combined_loss = (self.lca_loss_w * loss["LCA"] + self.node_loss_w * loss["t_nodes"]
                          + self.edge_loss_w * loss["tt_edges"] + loss["pv_asso"])
@@ -1196,6 +1335,11 @@ class DFEILightningModule(L.LightningModule):
             combined_loss = combined_loss + self.mom_loss_weight * loss["mom"]
         if "pv_cluster" in loss and self.pv_cluster_on:
             combined_loss = combined_loss + self.pv_cluster_loss_weight * loss["pv_cluster"]
+        # [2026-09-24] 事件级链数辅助头 / 链级对比损失
+        if self.evt_count_w > 0 and "evt_count" in loss:
+            combined_loss = combined_loss + self.evt_count_w * loss["evt_count"]
+        if self.chain_contrast_w > 0 and "chain_contrast" in loss:
+            combined_loss = combined_loss + self.chain_contrast_w * loss["chain_contrast"]
 
         # 极端防御: 组合 loss 仍非有限或异常巨大时, 置为 0 损失, 避免梯度爆炸污染训练
         if not torch.isfinite(combined_loss) or combined_loss > 1e5:
