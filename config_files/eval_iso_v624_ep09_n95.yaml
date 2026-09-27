@@ -1,0 +1,31 @@
+evaluate:
+  nfiles:
+  - 20
+  over_write: iso_v624_ep09_k0_n95
+  sample:
+  - inclusive_00342451
+inference:
+  LCA: true
+  LCA_weights: true
+  edge_prune: true
+  edge_prune_thr: 0.95
+  edge_prune_weights: true
+  node_prune: true
+  node_prune_thr: 0.95
+  node_prune_weights: true
+  pv_asso: true
+  pv_asso_weights: true
+settings:
+  calibration: false
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
+  graph_mode: None
+  model: 962409
+  model_arch: DFEI
+  ncpu: 4
+  nfiles:
+  - 20
+  ngpu: 1
+  node_sel: 'true'
+  pv_model: None
+  sample:
+  - inclusive_00342451
