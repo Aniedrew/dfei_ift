@@ -1,0 +1,29 @@
+# 通用评测配置 (v3 pruning benchmark 专用)
+# 原理: adjust_config_evaluation 会读 --version 对应目录里的 input_config.yaml 作为
+#       架构基准 (DFEI/GNblocks/derived 等), 再用本文件覆盖 inference/settings/evaluate。
+#       因此这里**只放必须覆盖的项**, 其余一律沿用该版本自己的配方 -> 保证跨版本可比。
+# 用法: python3 analyze_prune_loss.py --config config_files/eval_bench_v3_n90.yaml \
+#         --version <V> --tag <tag> --thr 0.9
+evaluate:
+  nfiles:
+  - 20
+  over_write: bench_v3
+  sample:
+  - inclusive_00342451
+inference:
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+settings:
+  calibration: false
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
+  graph_mode: None
+  model_arch: DFEI
+  model: 601          # 占位, 会被 --version 覆盖
+  ncpu: 4
+  nfiles:
+  - 20
+  ngpu: 1
+  node_sel: 'true'
+  pv_model: None
+  sample:
+  - inclusive_00342451

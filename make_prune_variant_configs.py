@@ -166,6 +166,34 @@ VARIANTS = {
                  edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
                  gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
                  chain_contrastive_weight=0.5, thr=0.95),
+    # ---- 2026-09-29 v640 = v633 配方, 唯一区别: best ckpt / 早停的监控指标换成剪枝 AP ----
+    # 动机: val_combined_loss 是 8 个任务的加权和 (edge 项占 65-70%), 与"剪枝 AP"的排序不一致,
+    #       选 ckpt 用的其实是另一把尺子 (v614: min-val ckpt 13.81 vs 末轮 16.32, 白丢 2.5pp)。
+    #       把监控指标切到验收判据 (边剪枝 AP) 上, 与 v633 构成单变量对照。
+    "v640": dict(epochs=60, early_stop_patience=15, tag="v640_apmon", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=200)),
+    # ---- 2026-09-29 v641 = v640 + 链级 min-pooling recall 损失 (AND / 指数语义) ----
+    # 动机: "一个环节掉下去整条链就断" 是乘性 (长 n 链存活 = p^n), 逐边 BCE 优化的是平均
+    #       正确率, 与链级目标不一致。chain_recall_loss 直接罚每条真值链里**最弱**的点/边,
+    #       是"指数语义"在 loss 侧的对应物 (此前 chain_recall_weight=0, 从未启用过)。
+    # 参数: thr 取 0.9 与推理剪枝阈值对齐 (该 loss 默认 0.5, 与决策点不匹配); tau=0.1 保持锐利;
+    #       权重 5.0 为探索值 (该项量级 ~0.7-7, 相对 combined ~125 属"有意义但不主导")。
+    "v641": dict(epochs=60, early_stop_patience=15, tag="v641_chainrecall", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 chain_recall_weight=5.0, chain_recall_edge_weight=5.0,
+                 chain_recall_thr=0.9, chain_recall_tau=0.1,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=200)),
 }
 
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
@@ -211,13 +239,21 @@ def main():
                        ("edge_rank_mode", "edge_rank_mode"),
                        ("derived_vertex", "derived_vertex"),
                        ("edge_dz_abs", "edge_dz_abs"),
-                       ("edge_dz_pvz_canon", "edge_dz_pvz_canon")]:
+                       ("edge_dz_pvz_canon", "edge_dz_pvz_canon"),
+                       # [2026-09-29] 链级 min-pooling recall loss (AND / 最弱环节语义)
+                       ("chain_recall_weight", "chain_recall_weight"),
+                       ("chain_recall_edge_weight", "chain_recall_edge_weight"),
+                       ("chain_recall_thr", "chain_recall_thr"),
+                       ("chain_recall_tau", "chain_recall_tau")]:
             if k in v:
                 c["inference"][key] = v[k]
         if v.get("dz_dict"):
             c["inference"]["dz_norm_dict"] = DZ_DICT_0904
         for k, val in (v.get("gn") or {}).items():      # GN blocks 级开关 (模型结构)
             c["DFEI"]["GNblocks"][k] = val
+        # [2026-09-29] settings 段扩展 (监控指标 / val 剪枝指标等), 避免"新键被吞"
+        for k, val in (v.get("settings_extra") or {}).items():
+            c["settings"][k] = val
         if "thr" in v:
             c["inference"]["node_prune_thr"] = v["thr"]
             c["inference"]["edge_prune_thr"] = v["thr"]
