@@ -2,6 +2,7 @@ import pytorch_lightning as L
 
 from collections import defaultdict
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -343,6 +344,29 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False)
     return node_der, edge_der
 
 
+def prune_auc(score, label):
+    """[2026-09-29] 剪枝 AUC (秩和公式)。
+
+    与 analyze_prune_loss.py 里的同名函数**逐位一致** —— val 指标必须与
+    report_figs/bench_auc.csv 用同一把尺子, 否则"选 ckpt"和"验收"对不上。
+    """
+    o = np.argsort(score)
+    r = np.empty(len(o), float)
+    r[o] = np.arange(1, len(o) + 1)
+    p = int(label.sum())
+    n = len(label) - p
+    return float((r[label == 1].sum() - p * (p + 1) / 2) / (p * n)) if p and n else float("nan")
+
+
+def prune_ap(score, label):
+    """[2026-09-29] 剪枝 AP (average precision, 正类率极低时比 AUC 有区分度)。同 analyze_prune_loss.py。"""
+    o = np.argsort(-score)
+    l = label[o]
+    tp = np.cumsum(l)
+    prec = tp / np.arange(1, len(l) + 1)
+    return float((prec * l).sum() / max(1, l.sum()))
+
+
 class DFEILightningModule(L.LightningModule):
     def __init__(self, model, optimizer_class, optimizer_params, configs, pos_weights):
         super().__init__()
@@ -512,6 +536,18 @@ class DFEILightningModule(L.LightningModule):
         self.optimizer_params = optimizer_params
         # 续训时希望使用的初始学习率 (从 settings.lr 读取; None 表示沿用 checkpoint 中的 lr)
         self.resume_lr = configs.get("settings", {}).get("lr", None)
+
+        # ==== [2026-09-29] val 上的剪枝 AUC/AP (服务的把 ckpt 选择/早停切到"验收判据") ====
+        # 动机: best ckpt 与 EarlyStopping 一直由 val_combined_loss 决定, 它是 8 个任务的
+        # 加权和 (edge 项占 65-70%), 与"剪枝 AUC/AP"的排序不一致 -> 选 ckpt 用的是另一把
+        # 尺子 (v614: min-val ckpt=13.81 vs 末轮=16.32, 白丢 2.5pp)。
+        # 口径: 固定前 settings.validate_prune_events 个 val 事件; 与 bench_auc.csv 完全一致
+        # (边标签 = tt y>0, 点标签 = ft != 1, 分数取最后一个 block 的 weights -- 与推理同位置)。
+        _vpm = configs.get("settings", {})
+        self.vpm_on = bool(_vpm.get("validate_prune_metric", False))
+        self.vpm_events = int(_vpm.get("validate_prune_events", 200))
+        self.vpm_node_thr = float(self.configs.get("node_prune_thr", 0.9))   # 工作点池用
+        self._vpm = None
 
         # Loss functions + associated inference class for plotting
         if self.configs["LCA"]:
@@ -1112,6 +1148,10 @@ class DFEILightningModule(L.LightningModule):
 
         for i, block in enumerate(self.model._blocks):
             use_focal = (mode == "train" and self.prune_focal_gamma > 0)
+            # [2026-09-29] val 剪枝 AUC/AP: 只在最后一个 block 取分 (与推理剪枝取值位置一致)
+            # 注意: validation_step 传的 mode 是 "val" (不是 "validation")。
+            if mode == "val" and self.vpm_on and i == len(self.model._blocks) - 1:
+                self._vpm_accumulate(batch, block)
             if self.configs["node_prune"]:
                 if use_focal:
                     loss["t_nodes"] += focal_bce_with_logits(block.node_logits['tracks'], y_nodes,
@@ -1283,7 +1323,9 @@ class DFEILightningModule(L.LightningModule):
                     loss["chain_contrast"] = chain_contrastive_loss(
                         _blk._last_node_emb, _cid, _bt, tau=self.chain_contrast_tau)
                     # [2026-09-26 FIX] 落日志: 此前该项从不记录, combined_loss 无法分项复核
-                    if mode == "train" and self.trn_log is not None and "chain_contrast_loss" in self.trn_log:
+                    # [2026-09-29 FIX] 去掉 `in` 守卫: on_train_epoch_end 会把 trn_log 重建成
+                    # defaultdict(list), 守卫在 epoch>=1 恒为 False -> 只在第 0 轮记过一次。
+                    if mode == "train" and self.trn_log is not None:
                         self.trn_log["chain_contrast_loss"].append(float(loss["chain_contrast"]))
 
         # 权重可配 (默认 1/1/33 与旧行为完全一致); 见 __init__ 中"剪枝损失再平衡"注释
@@ -1292,8 +1334,9 @@ class DFEILightningModule(L.LightningModule):
         # ==== 边头 pairwise ranking 损失 (v614) ====
         if self.edge_rank_w > 0 and "tt_rank" in loss:
             combined_loss = combined_loss + self.edge_rank_w * loss["tt_rank"]
-            if "edge_rank_loss" in log:
-                log["edge_rank_loss"].append(loss["tt_rank"].item())
+            # [2026-09-29 FIX] 去掉 `in` 守卫: trn_log 在 epoch_end 被重建成 defaultdict(list),
+            # 守卫自 epoch>=1 起恒为 False -> 实测 train_edge_rank_loss 只记了 1/54 行。
+            log["edge_rank_loss"].append(loss["tt_rank"].item())
         # ==== 方向头 (v618/v619) ====
         if self.dir_head_w > 0 and "dir" in loss:
             combined_loss = combined_loss + self.dir_head_w * loss["dir"]
@@ -1315,12 +1358,12 @@ class DFEILightningModule(L.LightningModule):
                 thr=self.chain_recall_thr, tau=self.chain_recall_tau)
             if _cr_node is not None:
                 combined_loss = combined_loss + self.chain_recall_w * _cr_node
-                if "chain_recall_loss" in log:
-                    log["chain_recall_loss"].append(_cr_node.item())
+                # [2026-09-29 FIX] 去掉 `in` 守卫 (trn_log 每轮被重建成 defaultdict, 守卫自
+                # epoch>=1 起恒 False -> 只在第 0 轮记过一次)。下同。
+                log["chain_recall_loss"].append(_cr_node.item())
             if _cr_edge is not None:
                 combined_loss = combined_loss + self.chain_recall_edge_w * _cr_edge
-                if "chain_recall_edge_loss" in log:
-                    log["chain_recall_edge_loss"].append(_cr_edge.item())
+                log["chain_recall_edge_loss"].append(_cr_edge.item())
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:
@@ -1660,11 +1703,81 @@ class DFEILightningModule(L.LightningModule):
         current_lr = optimizer.param_groups[0]["lr"]
         self.log("lr", current_lr, prog_bar=False, on_epoch=True, on_step=False)
 
+    # ==== [2026-09-29] val 剪枝 AUC/AP: 累积 / 汇总 ====
+    def _vpm_reset(self):
+        self._vpm = {"n_evt": 0, "nsc": [], "nlab": [], "esc": [], "elab": [], "ehard": [], "edp": []}
+
+    def _vpm_accumulate(self, batch, block):
+        """累积最后一个 block 的节点/边剪枝分数与标签 (固定前 vpm_events 个事件)。
+
+        除全局池外, 还记录两个"主判据池"的成员掩码 (2026-09-29 v3):
+          - 难池   : 真边 ∪ {两端都是真值径迹的假边}。全局池 99.7% 是背景-背景这类
+                     闭眼可分的负例, 全局 AUC 基本是常数 -> 必须在难池里看。
+          - 工作点池: 两端点都通过点剪枝阈值的边 = 推理时真正进入边决策的 population。
+        两个掩码都只需 y 与 ft, 不需要真值链重建, 因此 val 每轮都算得起。
+
+        注: 按 batch 累积, 因此实际事件数会略微超过 vpm_events (最多一个 batch), 日志里打印真实值。
+        """
+        if self._vpm is None or self._vpm["n_evt"] >= self.vpm_events:
+            return
+        tb = batch["tracks"].batch
+        n_ev = int(tb.max().item()) + 1 if tb.numel() else 0
+        with torch.no_grad():
+            ei = batch[("tracks", "to", "tracks")].edge_index.detach().cpu().numpy()
+            nsc = block.node_weights["tracks"].detach().float().cpu().numpy().reshape(-1)
+            esc = block.edge_weights[("tracks", "to", "tracks")].detach().float().cpu().numpy().reshape(-1)
+            nlab = (batch["tracks"].ft != 1).detach().cpu().numpy().astype(np.int8)
+            elab = (batch[("tracks", "to", "tracks")].y.reshape(-1) > 0).detach().cpu().numpy().astype(np.int8)
+            ehard = (((nlab[ei[0]] == 1) & (nlab[ei[1]] == 1)) | (elab == 1))
+            edp = (nsc[ei[0]] > self.vpm_node_thr) & (nsc[ei[1]] > self.vpm_node_thr)
+        self._vpm["nsc"].append(nsc)
+        self._vpm["nlab"].append(nlab)
+        self._vpm["esc"].append(esc)
+        self._vpm["elab"].append(elab)
+        self._vpm["ehard"].append(ehard)
+        self._vpm["edp"].append(edp)
+        self._vpm["n_evt"] += n_ev
+
+    def on_validation_epoch_start(self):
+        if self.vpm_on:
+            self._vpm_reset()
+
+    def _log_val_prune_metrics(self):
+        d = self._vpm
+        if not self.vpm_on or not d or not d["esc"]:
+            return
+        esc, elab = np.concatenate(d["esc"]), np.concatenate(d["elab"])
+        nsc, nlab = np.concatenate(d["nsc"]), np.concatenate(d["nlab"])
+        ehard, edp = np.concatenate(d["ehard"]), np.concatenate(d["edp"])
+        ap_hard = prune_ap(esc[ehard], elab[ehard]) if ehard.any() else float("nan")
+        dl = elab[edp]
+        ap_dp = prune_ap(esc[edp], dl) if (dl.sum() and dl.sum() < len(dl)) else float("nan")
+        vals = {
+            "prune_edge_auc": prune_auc(esc, elab),
+            "prune_edge_ap": prune_ap(esc, elab),
+            "prune_node_auc": prune_auc(nsc, nlab),
+            "prune_node_ap": prune_ap(nsc, nlab),
+            "prune_ap_hard": ap_hard,          # 主判据 1: 难池 AP
+            "prune_ap_dp": ap_dp,              # 主判据 2: 工作点池 AP
+        }
+        for k, v in vals.items():
+            if np.isfinite(v):
+                self.log(f"val_{k}", float(v), prog_bar=(k == "prune_ap_hard"),
+                         on_epoch=True, on_step=False)
+        # monitor 用的别名 val_prune_ap = 难池 AP (主判据 1); 旧配置无需改动
+        if np.isfinite(ap_hard):
+            self.log("val_prune_ap", float(ap_hard), on_epoch=True, on_step=False)
+        print(f"[vpm] val 剪枝指标 (events={d['n_evt']}, 边 {len(elab)} 条 / 点 {len(nlab)} 个): "
+              f"全局 edge AUC={vals['prune_edge_auc']:.4f} AP={vals['prune_edge_ap']:.4f} | "
+              f"难池 AP={ap_hard:.4f} (n={int(ehard.sum())}) | 工作点池 AP={ap_dp:.4f} (n={int(edp.sum())}) | "
+              f"node AUC={vals['prune_node_auc']:.4f} AP={vals['prune_node_ap']:.4f}", flush=True)
+
     def on_validation_epoch_end(self):
         avg_losses = epoch_end_loggable(self.val_log)
         for key, val in avg_losses.items():
             self.log(f"val_{key}", val, prog_bar=(key == "combined_loss"), on_epoch=True, on_step=False)
         self.val_log = defaultdict(list)
+        self._log_val_prune_metrics()
 
     def on_test_epoch_end(self):
         if self.version is None:

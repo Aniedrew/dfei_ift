@@ -25,15 +25,28 @@ class ResetEarlyStoppingOnResume(pl.Callback):
             if isinstance(cb, EarlyStopping):
                 cb.wait_count = 0
                 cb.stopped_epoch = 0
-                cb.best_score = torch.tensor(torch.inf)
-                print("[early_stop] 续训: 重置 EarlyStopping (wait_count=0, best=inf, 从本 run 重新计)")
+                # [2026-09-29] best 初值取决于 mode: 监控 AUC/AP 时 mode="max" 必须为 -inf,
+                # 否则第一个 epoch 就被判成"未改善", 早停计数立刻开始累。
+                cb.best_score = torch.tensor(-torch.inf if cb.mode == "max" else torch.inf)
+                print("[early_stop] 续训: 重置 EarlyStopping (wait_count=0, best="
+                      f"{'-inf' if cb.mode == 'max' else 'inf'}, mode={cb.mode}, 从本 run 重新计)")
 
 
 def training(module, configs, trn_loader=None, val_loader=None, chunkloader=None):
     # module = torch.compile(module)
     model = configs["model"]
 
-    monitoring_loss = "val_combined_loss" if model == "DFEI" else "val_ft_loss"
+    # [2026-09-29] 监控指标可配 (settings.monitor_metric): 默认沿用历史行为 val_combined_loss。
+    # 换成 val_prune_ap / val_prune_edge_auc 等"越大越好"的指标时, mode 从后缀自动推断为 max,
+    # 也可用 settings.monitor_mode 显式覆盖。best ckpt 与 EarlyStopping 都跟它走。
+    monitoring_loss = (configs["settings"].get("monitor_metric")
+                       or ("val_combined_loss" if model == "DFEI" else "val_ft_loss"))
+    _monitor_mode = configs["settings"].get("monitor_mode")
+    if _monitor_mode is None:
+        _monitor_mode = "max" if monitoring_loss.endswith(("_auc", "_ap")) else "min"
+    if monitoring_loss.startswith("val_prune") and not configs["settings"].get("validate_prune_metric", False):
+        # 早失败: 否则 ModelCheckpoint 会因为监控键不存在而在第一个 validation 后崩
+        raise ValueError("settings.monitor_metric 指向剪枝指标, 但 settings.validate_prune_metric 未开启")
 
     # 早停 patience 可配置: settings.early_stop_patience (默认 15 保持历史行为)。
     # 世代长训需跑满预算, 配置里设 early_stop_patience: 0 即禁用早停
@@ -44,14 +57,14 @@ def training(module, configs, trn_loader=None, val_loader=None, chunkloader=None
         _es_callbacks.append(EarlyStopping(
             monitor=monitoring_loss,
             verbose=True,
-            mode="min",
+            mode=_monitor_mode,
             patience=_es_patience,
         ))
 
     best_model_callback = ModelCheckpoint(
         filename=f"best-{{epoch:02d}}-{{{monitoring_loss}:.3f}}",
         monitor=monitoring_loss,
-        mode="min",
+        mode=_monitor_mode,
         save_top_k=15
     )
     last_epoch_callback = ModelCheckpoint(

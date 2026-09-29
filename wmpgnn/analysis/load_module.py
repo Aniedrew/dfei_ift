@@ -44,14 +44,25 @@ def get_bis_model(version: int, configs: Dict) -> str:
     model = configs["model"]
     log_dir = configs["log_dir"]
     files = glob.glob(f"{log_dir}/{model}/version_{version}/checkpoints/*best-epoch*.ckpt")
-    if model == "DFEI":
-        pattern = re.compile(r"val_combined_loss=([\d.]+)")
-    elif model == "IFT":
-        pattern = re.compile(r"val_ft_loss=([\d.]+)")
-    else:
-        raise ValueError(f"undefined model: {model}")
-    bis = min(files, key=lambda s: float(pattern.search(s).group(1)[:-1]))
-    return bis
+    if not files:
+        raise FileNotFoundError(
+            f"version_{version} 下没有 best-epoch*.ckpt ({log_dir}/{model}/version_{version}/checkpoints)")
+    # [2026-09-29] 监控指标不再写死: 文件名形如 best-epoch=19-<metric>=<value>.ckpt,
+    # metric 由该 run 的 settings.monitor_metric 决定 (默认 val_combined_loss, 也可以是
+    # val_prune_ap 等)。loss 类取最小, auc/ap 类取最大。
+    pat = re.compile(r"best-epoch=\d+-([A-Za-z0-9_]+)=([\d.]+)\.ckpt")
+    cands = []
+    for f in files:
+        m = pat.search(f)
+        if m:
+            cands.append((m.group(1), float(m.group(2)), f))
+    if not cands:
+        raise ValueError(f"无法从文件名解析监控指标: {files[:3]} ...")
+    metric = max({c[0] for c in cands}, key=lambda k: sum(1 for c in cands if c[0] == k))
+    same = [c for c in cands if c[0] == metric]
+    pick = (max if metric.endswith(("_auc", "_ap")) else min)(same, key=lambda c: c[1])
+    print(f"[get_bis_model] version_{version}: monitor={metric} -> {pick[2]}")
+    return pick[2]
 
 
 def _upscale_conflicts(model, state_dict) -> list:
