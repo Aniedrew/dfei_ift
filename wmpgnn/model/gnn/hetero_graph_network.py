@@ -195,6 +195,10 @@ class HeteroGraphNetwork(pl.LightningModule):
                 n_heads=int(config.get("line_graph_heads", 4)),
                 hidden=int(config.get("line_graph_hidden", 32)),
                 max_neighbors=int(config.get("line_graph_max_neighbors", 32)),
+                # [2026-10-05] 几何 pair-bias: 用 der_edges 的这几列 (如顶点几何 doca/|Δ起点|)
+                #   导出每头的 attention logit 偏置; 空/未给 -> 不加偏置 (与 v637 逐位一致)
+                bias_cols=list(config.get("line_graph_bias_cols", []) or []),
+                bias_hidden=int(config.get("line_graph_bias_hidden", 32)),
             )
 
     def _b2_mask(self, w):
@@ -225,7 +229,9 @@ class HeteroGraphNetwork(pl.LightningModule):
                 #     graph_batch = 每条边的事件 id (由 sender 节点取), 用于事件隔离。
                 if (self._line_attn is not None and edge_type == ('tracks', 'to', 'tracks')
                         and getattr(self, "_line_active", False)):
-                    _e_in = self._line_attn(_e_in, node_input[edge_type].edge_index, graph_batch)
+                    # bias_x=_de: 几何 pair-bias 的输入列 (无 bias_cols 时被模块内部忽略)
+                    _e_in = self._line_attn(_e_in, node_input[edge_type].edge_index, graph_batch,
+                                            bias_x=_de)
                 self.edge_logits[edge_type] = self._edge_mlps[edge_type](_e_in, graph_batch)
                 self.edge_weights[edge_type] = self._sigmoid(self.edge_logits[edge_type])
                 # 方向头 (剪枝 MLP 的第二输出), 只在最后一个 block 取值

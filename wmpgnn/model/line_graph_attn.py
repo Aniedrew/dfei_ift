@@ -120,7 +120,8 @@ class LineGraphAttention(nn.Module):
     """tt 边图上的多头注意力 (零初始化输出投影 -> 起始恒等)。"""
 
     def __init__(self, edge_dim: int, n_rounds: int = 1, n_heads: int = 4,
-                 hidden: int = 32, dropout: float = 0.0, max_neighbors: int = 32):
+                 hidden: int = 32, dropout: float = 0.0, max_neighbors: int = 32,
+                 bias_cols=None, bias_hidden: int = 32):
         super().__init__()
         self.n_rounds = max(int(n_rounds), 1)
         self.n_heads = int(n_heads)
@@ -137,13 +138,33 @@ class LineGraphAttention(nn.Module):
         # 末层置零 -> 残差分支起始为 0 -> 打开开关但未训练时与关闭严格等价
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
+
+        # ==== [2026-10-05] 几何 pair-bias (Graphormer / AlphaFold 思路) ====
+        # 动机: 小模型探针里"几何量与注意力直接耦合"是唯一与大模型 v637 不同、值得单变量检验的差异;
+        #   主模型此前把几何量当普通输入列喂给 MLP, 从未让它直接调制 attention logit。
+        # 形式: 对相邻边对 (e,f) 取 [b_e, b_f, |b_e-b_f|, b_e*b_f] -> 小 MLP -> 每头一个标量偏置,
+        #   加到 logits 上。**对 (e,f) 交换对称**(用和/差/积而非顺序拼接), 与 0702 delta_z0 的教训一致。
+        # bias_cols = 用 der_edges 的哪几列当 b (如顶点几何 doca/|Δ起点|); None/空 = 不加偏置(旧行为)。
+        self.bias_cols = [int(c) for c in bias_cols] if bias_cols else None
+        self.bias_dim = len(self.bias_cols) if self.bias_cols else 0
+        self.bias_mlp = None
+        if self.bias_dim > 0:
+            self.bias_mlp = nn.Sequential(nn.Linear(4 * self.bias_dim, int(bias_hidden)),
+                                          nn.ReLU(),
+                                          nn.Linear(int(bias_hidden), self.n_heads))
+            # 末层置零 -> 起始偏置恒为 0 -> 与"无 bias"逐位一致 (真正的单变量对照)
+            nn.init.zeros_(self.bias_mlp[-1].weight)
+            nn.init.zeros_(self.bias_mlp[-1].bias)
+
         print(f"[line_graph] tt 边图注意力启用: dim={edge_dim} rounds={self.n_rounds} "
               f"heads={self.n_heads} hidden={self.hidden} "
               f"max_neighbors={self.max_neighbors if self.max_neighbors > 0 else 'off'} "
+              f"bias_cols={self.bias_cols if self.bias_cols else 'off'} "
               f"(输出投影零初始化, 起始恒等)")
 
-    def forward(self, h, edge_index, edge_batch=None):
+    def forward(self, h, edge_index, edge_batch=None, bias_x=None):
         """h: (E,D) tt 边表征; edge_index: (2,E); edge_batch: (E,) 事件 id。
+        bias_x: (E,K) 可选, 每条边的几何量 (只取 self.bias_cols 那几列做 pair-bias)。
         返回 (E,D): 每条边经边图注意力精修后的表征 (零初始化时恒等于输入)。"""
         e = int(h.shape[0])
         if e == 0 or self.hidden == 0:
@@ -155,11 +176,23 @@ class LineGraphAttention(nn.Module):
         if ls.numel() == 0:                     # 边图无任何相邻对 (每条边都孤立)
             return h
 
+        # 几何 pair-bias: 只依赖静态几何量, 与轮数无关 -> 循环外算一次
+        bias_term = None
+        if (self.bias_mlp is not None and bias_x is not None
+                and bias_x.shape[0] == e and bias_x.shape[1] > max(self.bias_cols)):
+            b = bias_x[:, self.bias_cols].to(dtype=h.dtype, device=h.device)
+            bi, bj = b[ls], b[ld]
+            # [b_e, b_f, |b_e-b_f|, b_e*b_f] 对 (e,f) 交换对称 (不用顺序拼接)
+            feat = torch.cat([bi, bj, (bi - bj).abs(), bi * bj], dim=-1)
+            bias_term = self.bias_mlp(feat)                          # (P, heads)
+
         for _ in range(self.n_rounds):
             q = self.q(h).view(e, self.n_heads, self.h)
             k = self.k(h).view(e, self.n_heads, self.h)
             v = self.v(h).view(e, self.n_heads, self.h)
             logits = (q[ls] * k[ld]).sum(-1) / (self.h ** 0.5)      # (P, heads)
+            if bias_term is not None:
+                logits = logits + bias_term.to(logits.dtype)
             attn = _segment_softmax(logits, ls, e)                  # 按接收边分段 softmax
             attn = F.dropout(attn, p=self.dropout, training=self.training)
             ctx = torch.zeros(e, self.n_heads, self.h, device=h.device, dtype=attn.dtype).index_add_(
@@ -230,4 +263,38 @@ if __name__ == "__main__":
     _ = lg2(h.clone(), ei, eb)
     assert lg(h[:0], ei[:, :0], eb[:0]).shape == (0, 4)
     print("[5] 多轮 / 空输入 稳健 ✓")
+
+    # (6) [2026-10-05] 几何 pair-bias 路径
+    lgb = LineGraphAttention(edge_dim=4, n_rounds=2, n_heads=2, hidden=8, bias_cols=[0, 1])
+    assert lgb.bias_dim == 2 and lgb.bias_mlp is not None
+    bx = torch.randn(e, 3)
+    hb = torch.randn(e, 4)
+    # 零初始化 (含 bias 末层) -> 仍与输入逐位相等
+    assert torch.equal(hb, lgb(hb.clone(), ei, eb, bx)), "带 bias 的零初始化下非恒等!"
+    # 打散权重 -> bias 真的进 logits: 只改 bias_x 的一列, 邻居边输出必须变
+    with torch.no_grad():
+        lgb.out.weight.normal_(0, 0.5); lgb.out.bias.normal_(0, 0.1)
+        lgb.bias_mlp[-1].weight.normal_(0, 0.5); lgb.bias_mlp[-1].bias.normal_(0, 0.1)
+    o1 = lgb(hb.clone(), ei, eb, bx)
+    bx2 = bx.clone(); bx2[edge_of(0, 1), 0] += 3.0
+    o2 = lgb(hb.clone(), ei, eb, bx2)
+    assert not torch.allclose(o2[edge_of(1, 0)], o1[edge_of(1, 0)]), "bias 未进入 logits!"
+    assert torch.isfinite(o1).all(), "输出含 nan/inf"
+    # bias_x 列数不够 / 为 None -> 静默退化为无 bias (不报错)
+    _ = lgb(hb.clone(), ei, eb, torch.randn(e, 1))
+    _ = lgb(hb.clone(), ei, eb, None)
+    # **端点交换不变性** (0702 delta_z0 泄漏的同类防线): 交换某条边两端点, 结果必须不变
+    ei_sw = ei.clone()
+    kk = edge_of(0, 1)
+    ei_sw[0, kk], ei_sw[1, kk] = ei[1, kk].item(), ei[0, kk].item()
+    o3 = lgb(hb.clone(), ei_sw, eb, bx)
+    d_sw = (o3 - o1).abs().max().item()
+    print("[6] 几何 pair-bias: 端点交换 max|Δ|=%.2e" % d_sw)
+    assert d_sw < 1e-6, "端点交换改变了输出 (对称性泄漏)!"
+    # 梯度有限
+    hg2 = torch.randn(e, 4, requires_grad=True)
+    lgb(hg2, ei, eb, bx).sum().backward()
+    assert hg2.grad is not None and torch.isfinite(hg2.grad).all(), "bias 路径梯度非法"
+    print("[6] 几何 pair-bias 路径 ✓ (含端点交换不变性与梯度)")
+
     print("全部自测通过 (断言全过)")
