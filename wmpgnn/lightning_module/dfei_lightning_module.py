@@ -188,7 +188,8 @@ def track_minip(batch):
     return out.scatter_reduce(0, tt_pv.edge_index[0].long(), v, reduce="amin", include_self=True)
 
 
-def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False):
+def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False,
+                            use_vertex_geom=False, use_pair_sym=False, use_comp=False):
     """从**原始**节点/边特征现算剪枝 MLP 的派生输入 (不重产数据)。
 
     动机: 剪枝 MLP 的输入只有 8 维节点特征 / 5 维边特征, 缺的正是
@@ -282,9 +283,13 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False)
         S = 0.5 * (S + S.t())                                  # 对称化
         S2 = S @ S
         row = S.sum(1).clamp(min=1e-6)
-        sup[me] = S2[la, lb] / row[la]
-        # 行内 rank: 该边亲和度在同起点所有边中的分位 (越高越"排他")
-        rk_aff[me] = (S[la] > aff.unsqueeze(1)).float().mean(1)
+        # [2026-09-30 FIX] 对称化: 原式只除 row[la]、且只在 S[la] 这一行内比较, 结果**依赖边方向**
+        #   (交换 (i,j) 得到不同的值, 实测 max|Δ|=8.1e-2)。tt 边在物理上是无向的, 这与 0702
+        #   delta_z0 那类"顺序信息"同形 —— 必须消掉。S 已对称化 => S2 对称, 故下面两式都对称。
+        sup[me] = 0.5 * (S2[la, lb] / row[la] + S2[lb, la] / row[lb])
+        # 行内 rank: 该边亲和度在同起点所有边中的分位 (越高越"排他"); 两端行内分位取平均 -> 对称
+        rk_aff[me] = 0.5 * ((S[la] > aff.unsqueeze(1)).float().mean(1)
+                            + (S[lb] > aff.unsqueeze(1)).float().mean(1))
     node_der = torch.stack([pT / 1000., pmod / 1000., ip / 10., rank, iso,
                             ntr[nb] / 100., npv[nb] / 10.], -1)
     mp = 0.13957
@@ -339,6 +344,85 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False)
         collin = d_perp / (dz_pair + 1.0)
         # 归一到合理量级 (与既有派生列一致) + 清 NaN/inf 并设硬上界
         for _v in (zcpa / 100.0, flight / 100.0, collin):
+            cols.append(torch.nan_to_num(_v, nan=0.0, posinf=0.0, neginf=0.0).clamp(-50.0, 50.0))
+    if use_vertex_geom:
+        # ==== [2026-09-30] derived_vertex_geom: 顶点一致性**几何绝对量** (边级 3 维) ====
+        # 依据: 特征上界分析(GBDT, docs/feature_ceiling_analysis.md)显示
+        #   (a) 现有 5+9+3 维边特征对"真边 vs 跨链假边"的判别力 = AUC 0.50 (随机);
+        #   (b) 但"两端生产顶点 3D 距离 |Δr|"单标量 = 0.704, 正确的线线最近距离(DOCA)
+        #       在节点特征之上再 +0.06 AUC (=0.738)。
+        # 旧 derived_vertex 只输出比值 d_perp/(|Δz|+1), 把 doca 的**绝对量级**除掉了 -> 信息被
+        #   稀释(实测贡献≈0)。这里给绝对量: [doca/100, log(doca), |Δr|/100]。
+        # 与上游 stored 的 log_DOCA_reco 无关: 那一列因 calculate_doca 的 t1 符号 bug 是噪声
+        #   (与正确值 corr=0.019), 这里用标准最小二乘解**现算**, 不依赖重产数据。
+        # 直线 P(τ)=A+τu (过生产顶点 A, 方向 = 单位动量); 最小化 |w + ta*ua - tb*ub|^2, w=A_a-A_b:
+        #   ta=(c*e-d)/(1-c²), tb=(e-c*d)/(1-c²), c=ua·ub, d=ua·w, e=ub·w。
+        A3v = torch.stack([xp[a], yp[a], zp[a]], 1)
+        B3v = torch.stack([xp[b], yp[b], zp[b]], 1)
+        uav, ubv = u[a], u[b]
+        w0v = A3v - B3v
+        cb = (uav * ubv).sum(-1)
+        dv = (uav * w0v).sum(-1)
+        ev = (ubv * w0v).sum(-1)
+        dnv = 1.0 - cb * cb
+        parv = dnv.abs() < 1e-3                                  # 近平行: 垂足病态
+        dnsv = torch.where(parv, torch.ones_like(dnv), dnv)
+        tav = ((cb * ev - dv) / dnsv).clamp(-1e4, 1e4)
+        tbv = ((ev - cb * dv) / dnsv).clamp(-1e4, 1e4)
+        F1v = A3v + tav.unsqueeze(1) * uav
+        F2v = B3v + tbv.unsqueeze(1) * ubv
+        d_parv = torch.linalg.norm(w0v - dv.unsqueeze(1) * uav, dim=1)   # 平行: w 的垂距(良态)
+        doca = torch.where(parv, d_parv, torch.linalg.norm(F1v - F2v, dim=1))
+        d_start = torch.linalg.norm(w0v, dim=1)                          # |Δ起点|
+        for _v in (doca / 100.0, torch.log(doca + 1e-5), d_start / 100.0):
+            cols.append(torch.nan_to_num(_v, nan=0.0, posinf=0.0, neginf=0.0).clamp(-50.0, 50.0))
+    if use_pair_sym:
+        # ==== [2026-09-30] derived_pair_sym: 把两端点原始节点特征**对称**放进边 (边级 24 维) ====
+        # 依据: 判别信息几乎全在**节点**特征里(两端 6 个生产顶点量就 AUC 0.66, 两端 16 维节点
+        #   特征 0.71), 而训练好的 GNN 在同一任务上只有 0.63 -> **模型没把节点信息用足**。
+        #   这里给边头一条直接的端点通道, 用三个**交换 (i,j) 不变**的组合(逐 8 维):
+        #     [x_i + x_j, |x_i - x_j|, x_i ⊙ x_j]
+        # 对称性说明: 故意**不用** [x_i, x_j] 的顺序拼接 —— 那要靠"上游优先"之类的人为定向才能
+        #   保持对称, 而 IP 相等时该定向退化为按下标排序, 会像 0702 的 delta_z0 那样把顺序信息
+        #   带进来。用和/差/积则天然对称, 且信息量等价(和差可反解两端)。
+        # 注意: 本函数的 cols 约定是**每项一个一维列** [n_e], 最后 torch.stack(cols, -1) 拼成 [n_e, n_dim]。
+        # 所以 24 维必须先 concat 成 [n_e,24] 再**逐列拆开** append —— 冒烟把三种错法都抓到了:
+        # ① `cols += [A,B,C]` 把三个 2D 张量当三列; ② 直接 append [n_e,24] 与其它 [n_e] 无法 stack;
+        # ③ reshape(-1) 成 [n_e*24] 同样无法 stack。
+        _ps = torch.cat([X[a] + X[b], (X[a] - X[b]).abs(), X[a] * X[b]], dim=-1)
+        for _i in range(_ps.shape[1]):
+            cols.append(_ps[:, _i])
+    if use_comp:
+        # ==== [2026-10-01] derived_comp: 竞争 / 排他性上下文 (边级 6 维) ====
+        # 依据: 大样本特征上界分析 (86690 条边, report_figs/feat_ceiling_big_probe.json):
+        #   加上下文后 AP 0.7655 -> 0.7824 (+0.0169); permutation importance 里排**第 2** 的
+        #   正是 deg_s (伙伴数/竞争度, +0.0235), 仅次于 doca (+0.1066)。
+        # 物理含义: 一条径迹若有很多"看起来同样合理"的候选伙伴, 它就更不可信 -> 排他/归属竞争。
+        # 注意: 这是"注意力/匹配"方向的**最小手工版本**, 用来当结构方案的下界对照。
+        # 按端点分组即自动按事件隔离 (tt 边两端必同事件), 无跨事件泄漏; 只用输入量。
+        d3c = torch.sqrt((xp[a] - xp[b]) ** 2 + (yp[a] - yp[b]) ** 2 + (zp[a] - zp[b]) ** 2 + 1e-6)
+        aff = torch.exp(-d3c / 50.0)                     # 事件内两两"同起点"亲和度
+        _, inv_s, cnt_s = torch.unique(a, return_inverse=True, return_counts=True)
+        _, inv_t, cnt_t = torch.unique(b, return_inverse=True, return_counts=True)
+        mx_s = torch.zeros(inv_s.max().item() + 1, device=dev, dtype=aff.dtype).scatter_reduce_(
+            0, inv_s, aff, reduce="amax")
+        mx_t = torch.zeros(inv_t.max().item() + 1, device=dev, dtype=aff.dtype).scatter_reduce_(
+            0, inv_t, aff, reduce="amax")
+        hi_s = torch.zeros_like(mx_s).scatter_add_(0, inv_s, (aff > 0.5).to(aff.dtype))
+        hi_t = torch.zeros_like(mx_t).scatter_add_(0, inv_t, (aff > 0.5).to(aff.dtype))
+        fdt = aff.dtype
+        # ⚠️ 必须用**对称组合**: 若直接拼 [源端量, 目标端量], 交换 (i,j) 会让两者互换位置 ->
+        # 特征向量随**边方向**变化 (冒烟实测 max|Δ|=0.99)。那与 0702 delta_z0 属同一类"顺序信息"
+        # 问题, 必须消掉。{min, max} 与无序对一一对应, 信息等价且严格对称。
+        r_s = aff / (mx_s[inv_s] + 1e-9)
+        r_t = aff / (mx_t[inv_t] + 1e-9)
+        d_s = hi_s[inv_s] / 10.0
+        d_t = hi_t[inv_t] / 10.0
+        c_s = cnt_s[inv_s].to(fdt) / 50.0
+        c_t = cnt_t[inv_t].to(fdt) / 50.0
+        for _v in (torch.minimum(r_s, r_t), torch.maximum(r_s, r_t),
+                   torch.minimum(d_s, d_t), torch.maximum(d_s, d_t),
+                   torch.minimum(c_s, c_t), torch.maximum(c_s, c_t)):
             cols.append(torch.nan_to_num(_v, nan=0.0, posinf=0.0, neginf=0.0).clamp(-50.0, 50.0))
     edge_der = torch.stack(cols, -1)
     return node_der, edge_der
@@ -545,7 +629,10 @@ class DFEILightningModule(L.LightningModule):
         # (边标签 = tt y>0, 点标签 = ft != 1, 分数取最后一个 block 的 weights -- 与推理同位置)。
         _vpm = configs.get("settings", {})
         self.vpm_on = bool(_vpm.get("validate_prune_metric", False))
-        self.vpm_events = int(_vpm.get("validate_prune_events", 200))
+        # [2026-09-30] 默认 1000 (原 200): 200 个事件上 AP 的逐轮抖动 ~±0.03, 会把
+        # "选 ckpt" 变成抽奖 —— v641 的 best ckpt 停在 ep0 的幸运峰 (0.777), 而中位数只有 0.76。
+        # 抖动 ~ 1/sqrt(n), 提到 1000 事件可把噪声降约 2.2 倍。
+        self.vpm_events = int(_vpm.get("validate_prune_events", 1000))
         self.vpm_node_thr = float(self.configs.get("node_prune_thr", 0.9))   # 工作点池用
         self._vpm = None
 
@@ -574,6 +661,9 @@ class DFEILightningModule(L.LightningModule):
         self.node_loss_w = float(self.configs.get("node_prune_weight", 1.0))
         self.lca_loss_w = float(self.configs.get("lca_weight", 1.0))
         self.edge_loss_w = float(self.configs.get("edge_prune_weight", 33.0))
+        # [2026-09-30] PV 关联损失此前**硬编码权重 1**, 无法关闭 -> v646 "只训剪枝" 需要能置 0,
+        #   否则 PV 头的梯度仍会经共享 backbone 干扰剪枝表征 (多任务干扰假说无法干净检验)。
+        self.pv_asso_w = float(self.configs.get("pv_asso_weight", 1.0))
         self.prune_focal_gamma = float(self.configs.get("prune_focal_gamma", 0.0))
         self._pw_nodes = pos_weights["nodes"]
         self._pw_edges = pos_weights["edges"]
@@ -634,8 +724,18 @@ class DFEILightningModule(L.LightningModule):
         self.der_tri = bool(self.configs.get("derived_triangle", False))
         # [2026-09-26] derived_vertex: 边级 3 维"次级顶点一致性" (zcpa/flight/collinearity)
         self.der_vertex = bool(self.configs.get("derived_vertex", False))
+        # [2026-09-30] 顶点一致性**几何绝对量** (doca / log(doca) / |Δ起点|, 3 维)。
+        #   与旧 derived_vertex 的区别: 旧版只给比值 d_perp/(|Δz|+1), 把绝对量级除掉了 ->
+        #   实测贡献≈0 (见 docs/feature_ceiling_analysis.md)。
+        self.der_vgeom = bool(self.configs.get("derived_vertex_geom", False))
+        # [2026-09-30] 两端节点特征**对称**直连到边 ([x_i+x_j, |x_i-x_j|, x_i*x_j], 24 维)。
+        self.der_psym = bool(self.configs.get("derived_pair_sym", False))
+        # [2026-10-01] derived_comp: 竞争/排他性上下文 (6 维) —— 注意力/匹配方向的最小手工版
+        self.der_comp = bool(self.configs.get("derived_comp", False))
         self.node_der_dim = 7 if self.der_prune else 0
-        self.edge_der_dim = (7 + (2 if self.der_tri else 0) + (3 if self.der_vertex else 0)) \
+        self.edge_der_dim = (7 + (2 if self.der_tri else 0) + (3 if self.der_vertex else 0)
+                             + (3 if self.der_vgeom else 0) + (24 if self.der_psym else 0)
+                             + (6 if self.der_comp else 0)) \
             if self.der_prune else 0
         if self.der_prune:
             # 维度必须与 GNblocks 里适配器的输入维严格一致 (否则前向 matmul 报错且难定位)
@@ -647,11 +747,17 @@ class DFEILightningModule(L.LightningModule):
             assert self.edge_der_dim == _ke_cfg, (
                 f"派生输入维度不一致: 边 {self.edge_der_dim} 维 = 7(基础)"
                 f"+{2 if self.der_tri else 0}(derived_triangle)"
-                f"+{3 if self.der_vertex else 0}(derived_vertex), "
+                f"+{3 if self.der_vertex else 0}(derived_vertex)"
+                f"+{3 if self.der_vgeom else 0}(derived_vertex_geom)"
+                f"+{24 if self.der_psym else 0}(derived_pair_sym)"
+                f"+{6 if self.der_comp else 0}(derived_comp), "
                 f"但 GNblocks.extra_edge_dim={_ke_cfg}")
             print(f"[der_input] 派生输入启用: 节点 {self.node_der_dim} 维 / 边 {self.edge_der_dim} 维"
                   f"{' (含三角传递)' if self.der_tri else ''}"
-                  f"{' (含次级顶点一致性)' if self.der_vertex else ''}")
+                  f"{' (含次级顶点一致性)' if self.der_vertex else ''}"
+                  f"{' (含顶点几何绝对量)' if self.der_vgeom else ''}"
+                  f"{' (含端点对称直连)' if self.der_psym else ''}"
+                  f"{' (含竞争/排他)' if self.der_comp else ''}")
         # 节点侧 pairwise ranking (边侧 ranking 已验证 +12.7%, 点的正类率高得多, 值得搬到点侧)
         self.node_rank_w = float(self.configs.get("node_rank_weight", 0.0))
         self.node_rank_nneg = int(self.configs.get("node_rank_nneg", 64))
@@ -1106,7 +1212,10 @@ class DFEILightningModule(L.LightningModule):
         if self.der_prune:
             try:
                 _nd_d, _ed_d = derive_pruning_features(batch, self._nc, self._ns, self.der_tri,
-                                                       use_vertex=self.der_vertex)
+                                                       use_vertex=self.der_vertex,
+                                                       use_vertex_geom=self.der_vgeom,
+                                                       use_pair_sym=self.der_psym,
+                                                       use_comp=self.der_comp)
                 batch['tracks'].x_der = _nd_d
                 batch[('tracks', 'to', 'tracks')].der_edges = _ed_d
                 if mode == "train" and self.trn_log is not None and "der_stat" not in self.trn_log:
@@ -1114,7 +1223,10 @@ class DFEILightningModule(L.LightningModule):
                     print(f"[der_input] 尺寸检查: 节点派生 {tuple(_nd_d.shape)} / 边派生 {tuple(_ed_d.shape)}"
                           f" | 样例 边 [ΔR,m,|Σq|,ΔpT,ΔIP,rk,Δz"
                           f"{',sup,rk_aff' if self.der_tri else ''}"
-                          f"{',zcpa,flight,collin' if self.der_vertex else ''}]= "
+                          f"{',zcpa,flight,collin' if self.der_vertex else ''}"
+                          f"{',doca,logdoca,|dr|' if self.der_vgeom else ''}"
+                          f"{',xi+xj,|xi-xj|,xi*xj' if self.der_psym else ''}"
+                          f"{',comp_ratio,deg,cnt ×2' if self.der_comp else ''}]= "
                           + " ".join(f"{x:+.2f}" for x in _ed_d[0].tolist()), flush=True)
             except Exception as _e:
                 # [2026-09-26 FIX] 训练时不允许静默降级: 派生特征算失败会退化成"没开 derived_prune"
@@ -1330,7 +1442,7 @@ class DFEILightningModule(L.LightningModule):
 
         # 权重可配 (默认 1/1/33 与旧行为完全一致); 见 __init__ 中"剪枝损失再平衡"注释
         combined_loss = (self.lca_loss_w * loss["LCA"] + self.node_loss_w * loss["t_nodes"]
-                         + self.edge_loss_w * loss["tt_edges"] + loss["pv_asso"])
+                         + self.edge_loss_w * loss["tt_edges"] + self.pv_asso_w * loss["pv_asso"])
         # ==== 边头 pairwise ranking 损失 (v614) ====
         if self.edge_rank_w > 0 and "tt_rank" in loss:
             combined_loss = combined_loss + self.edge_rank_w * loss["tt_rank"]
