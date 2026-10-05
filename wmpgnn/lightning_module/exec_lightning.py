@@ -52,6 +52,10 @@ def training(module, configs, trn_loader=None, val_loader=None, chunkloader=None
     # 世代长训需跑满预算, 配置里设 early_stop_patience: 0 即禁用早停
     #  (或用 >= max_epochs 的值, 等效永不触发)。
     _es_patience = int(configs["settings"].get("early_stop_patience", 15) or 0)
+    # [2026-09-30] min_delta: 监控 AUC/AP 这类**逐轮抖动大**的指标时, 没有 dead-band 会
+    # 在第一轮幸运高点后就再也"没有改善" -> 提前掐断 (v641: 难池 AP 在 ep0=0.777 后再没超过,
+    # patienc 15 就停在 ep15, 只训了 1/4 预算)。
+    _es_min_delta = float(configs["settings"].get("early_stop_min_delta", 0.0) or 0.0)
     _es_callbacks = []
     if _es_patience > 0:
         _es_callbacks.append(EarlyStopping(
@@ -59,6 +63,7 @@ def training(module, configs, trn_loader=None, val_loader=None, chunkloader=None
             verbose=True,
             mode=_monitor_mode,
             patience=_es_patience,
+            min_delta=_es_min_delta,
         ))
 
     best_model_callback = ModelCheckpoint(
