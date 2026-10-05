@@ -77,6 +77,12 @@ class EventReconstruction:
         self.log = {"pv_corr_ml": {}, "pv_corr_ip": {}, "pv_total": {}, "npvs": {}}
 
     def collect_results(self):
+        # [2026-10-03 FIX] 本函数**不幂等**: 第一次调用后 self.sig_df 由 list 变成 concat 出的
+        #   DataFrame; 若被调用第二次, `zip(self.sig_df, ...)` 迭代的是 DataFrame 的**列名(字符串)**,
+        #   于是在 `sig_df.copy()` 处抛 `AttributeError: 'str' object has no attribute 'copy'`。
+        #   v646 的测试阶段正好触发了第二次调用 -> 训练跑完但在 test 时崩溃 (EXIT=1)。
+        if not isinstance(self.sig_df, list):
+            return self.sig_df, self.evt_df
         sig_dfs = []
         evt_dfs = []
 
