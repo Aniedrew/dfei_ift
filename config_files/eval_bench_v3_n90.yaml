@@ -15,6 +15,8 @@ inference:
   node_prune_thr: 0.9
 settings:
   calibration: false
+  # [2026-09-30] 固定事件抽样/打乱顺序 -> 各版本评的是同一批事件 (跨版本可比的前提)
+  data_seed: 0
   data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
   graph_mode: None
   model_arch: DFEI

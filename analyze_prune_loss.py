@@ -82,7 +82,8 @@ def main():
     ap.add_argument("--events", type=int, default=300)
     ap.add_argument("--tag", default="v601_0904")
     ap.add_argument("--norm", default="new", choices=["new", "old"])
-    ap.add_argument("--thr", type=float, default=0.9)
+    ap.add_argument("--thr", type=float, default=None,
+                    help="剪枝阈值; 缺省则用配置里的 edge_prune_thr (保证各版本在各自工作点上算)")
     ap.add_argument("--out", default="report_figs")
     # [2026-09-29 v3] 汇总表文件名 (v3 列与 v2 不同, 不能追加到同一个 csv)
     ap.add_argument("--csv_name", default="bench_auc_v3.csv")
@@ -92,6 +93,13 @@ def main():
     cfg = yaml.safe_load(open(a.config))
     cfg["settings"]["model"] = a.version
     cfg = adjust_config_evaluation(cfg)
+    # [2026-09-30 FIX] 工作点阈值以**配置**为准。此前 --thr 独立于配置, 可能出现
+    # "评测配置把 node/edge thr 覆盖成 0.9, 而命令行给 0.95" -> dp 池与存活列算在不同工作点上。
+    if a.thr is None:
+        a.thr = float(cfg["inference"].get("edge_prune_thr", 0.9))
+        print(f"[bench] thr 取自配置: {a.thr}")
+    else:
+        print(f"[bench] thr 来自命令行覆盖: {a.thr} (配置为 {cfg['inference'].get('edge_prune_thr')})")
     module = load_module(cfg, transform_pos_weight(None, None, mode="eval"))
     module.eval()
     dev = next(module.parameters()).device
@@ -108,6 +116,46 @@ def main():
     for batch in ckl.test_dataloader():
         batch = batch.to(dev)
         ei = batch[("tracks", "to", "tracks")].edge_index.detach().cpu()
+        # ===== [2026-09-30] 代理传统基线 (每 batch 算一次) =====
+        # 目的: 回答"GNN 相对一个经典物理选择器, 增益随 n_B 怎么走"。基线只用**同一批输入**里的
+        #   物理量, 对应传统顶点法最核心的判据: 两条径迹的起点是否重合 + 直线是否共点。
+        #   base1 = -|Δ起点|                (单变量; 特征上界分析里最强单量 AUC≈0.70)
+        #   base2 = -(|Δ起点| + DOCA)       (两变量; DOCA 用标准最小二乘解现算 —— 注意上游
+        #                                    stored 的 log_DOCA_reco 因 t1 符号 bug 是噪声列)
+        # ⚠️ 这是**代理**基线, 不是 LHCb 的 Kalman/IVF 重建输出; 只能说"相对经典物理选择器"。
+        # 注: 这里按 bench 自己的 ei 顺序现算, 不依赖 derive_pruning_features 的内部边序
+        #     (实测两者边数不一致, 直接用会错位)。
+        _ALL_B1 = _ALL_B2 = None
+        try:
+            _nc_, _ns_ = (getattr(module, "_nc", {}) or {}), (getattr(module, "_ns", {}) or {})
+            _xn = batch["tracks"].x.detach().cpu().numpy()[:, :8]      # 前 8 列; use_pid 时后面才是 pid
+            def _raw(nm, col, _xn=_xn, _nc_=_nc_, _ns_=_ns_):
+                return _xn[:, col] * float(_ns_.get(nm, 1.0)) + float(_nc_.get(nm, 0.0))
+            _e = ei.numpy()
+            _P1 = np.stack([_raw("px_reco", 0)[_e[0]], _raw("py_reco", 1)[_e[0]],
+                            _raw("pz_reco", 2)[_e[0]]], 1)
+            _P2 = np.stack([_raw("px_reco", 0)[_e[1]], _raw("py_reco", 1)[_e[1]],
+                            _raw("pz_reco", 2)[_e[1]]], 1)
+            _A1 = np.stack([_raw("xProd_reco", 3)[_e[0]], _raw("yProd_reco", 4)[_e[0]],
+                            _raw("zProd_reco", 5)[_e[0]]], 1)
+            _B1 = np.stack([_raw("xProd_reco", 3)[_e[1]], _raw("yProd_reco", 4)[_e[1]],
+                            _raw("zProd_reco", 5)[_e[1]]], 1)
+            _u1 = _P1 / np.clip(np.linalg.norm(_P1, axis=1, keepdims=True), 1e-9, None)
+            _u2 = _P2 / np.clip(np.linalg.norm(_P2, axis=1, keepdims=True), 1e-9, None)
+            _w = _A1 - _B1
+            _c = (_u1 * _u2).sum(1)
+            _dd = (_u1 * _w).sum(1)
+            _ev = (_u2 * _w).sum(1)
+            _den = 1.0 - _c * _c
+            _okd = _den > 1e-6
+            _ta = np.where(_okd, (_c * _ev - _dd) / np.where(_okd, _den, 1.0), 0.0)
+            _tb = np.where(_okd, (_ev - _c * _dd) / np.where(_okd, _den, 1.0), 0.0)
+            _doca = np.linalg.norm(_w + _ta[:, None] * _u1 - _tb[:, None] * _u2, axis=1)
+            _dstart = np.linalg.norm(_w, axis=1)
+            _ALL_B1 = -_dstart
+            _ALL_B2 = -(_doca + _dstart)
+        except Exception as _eb:
+            print(f"[baseline] WARN 代理基线不可用: {type(_eb).__name__}: {_eb}", flush=True)
         tb = batch["tracks"].batch.detach().cpu()
         raw_x = batch["tracks"].x.detach().cpu().clone()
         ft = batch["tracks"].ft.detach().cpu().numpy().astype(int)
@@ -134,7 +182,9 @@ def main():
         except Exception:
             ew_pv = None
         out[("tracks", "to", "tracks")].lca = out[("tracks", "to", "tracks")].edges
-        graphs = out.to_data_list()
+        # [2026-09-29 FIX] 逐事件读 g 的属性时要 .numpy(): 在 GPU 上跑时图仍在 cuda,
+        # 原来只在 CPU 前台跑过所以没暴露 -> 统一在这里下沉到 CPU (前向仍留在 GPU)。
+        graphs = [x.cpu() for x in out.to_data_list()]
         for gid in range(int(tb.max().item()) + 1 if tb.numel() else 0):
             if n_evt >= a.events:
                 break
@@ -170,6 +220,9 @@ def main():
             ei_e = np.array([[g2l[int(x)] for x in ei_g[0]], [g2l[int(x)] for x in ei_g[1]]], dtype=int)
             ys = (y_tt[em.numpy()] > 0).astype(int)
             scs = ew[em.numpy()]
+            # [2026-09-30] 取该事件的代理基线分数 (每 batch 已算好, 见上面 _ALL_B1/_ALL_B2)
+            _base1 = None if _ALL_B1 is None else _ALL_B1[em.numpy()]
+            _base2 = None if _ALL_B2 is None else _ALL_B2[em.numpy()]
             is_sig = (ft[gt] != 1).astype(int)
             # [v3] 节点存活 (与剪枝同一 thr): 决定"工作点 population"(两端点都活下来的边)
             ns_surv = nw[gt] > a.thr
@@ -204,7 +257,12 @@ def main():
                     cls = "fake_sigbkg"
                 else:
                     cls = "fake_bkgbkg"
+                # [2026-09-30] n_b = 该事件真值链数(=b 强子数代理), 用于"多 B 事件"分层;
+                #   base1/base2 = **代理传统基线**分数(越大越好), 见下方多 B 分析块的说明。
                 e_rows.append(dict(evt=n_evt, cls=cls, sub=sub, multi_b=multi_b,
+                                   n_b=int(len(chains)),
+                                   base1=float(_base1[k]) if _base1 is not None else np.nan,
+                                   base2=float(_base2[k]) if _base2 is not None else np.nan,
                                    dp=int(bool(ns_surv[i]) and bool(ns_surv[j])), score=float(scs[k])))
             # ==== [2026-09-26] 非剪枝轴: (a) LCA 头判别力; (b) 真值链在剪枝图上的碎裂度 ====
             # 动机: v631 剪枝曲线最差却 All_fix 最高(24.46) -> All_fix 主要由链装配/解码决定,
@@ -212,7 +270,7 @@ def main():
             _ns = ns_surv                 # 存活节点 (与剪枝用同一 thr)
             _es = scs > a.thr             # 存活边
             try:
-                _ll = out[("tracks", "to", "tracks")].edges[em.numpy()]
+                _ll = out[("tracks", "to", "tracks")].edges[em.numpy()].cpu()
                 if _ll.dim() == 2 and _ll.shape[1] >= 2:
                     lca_s_acc.append((_ll[:, 1] - _ll[:, 0]).numpy())   # 类1 - 类0
                     lca_y_acc.append(ys)
@@ -388,6 +446,72 @@ def main():
     print("  分类别 AP (正例池=全部真边): " + "  ".join(
         f"{c.replace('fake_', '')}={res['ap_' + c]:.4f}(n={res['n_' + c]})"
         for c in ("fake_intra", "fake_inter", "fake_sigbkg", "fake_bkgbkg")))
+
+    # ============ [2026-09-30] 多 B 事件分层: DFEI 的目标场景 ============
+    # DFEI 的理想目标是"传统方法难找的事件"(一堆 B 的事件)。因此**绝对 AP 不是重点**, 重点是:
+    #   (a) 模型在 n_B 增大时掉多少;  (b) 相对代理传统基线的**增益**随 n_B 怎么走。
+    # 判读: 若 gain 随 n_B 递增 -> DFEI 的价值命题成立(越难的事件它相对越强);
+    #       若 gain 随 n_B 递减(甚至转负) -> 它在自己的目标场景上没有增量价值。
+    mb_rows = []
+    if "n_b" in e.columns:
+        # 注意: 这里是**左闭右开**区间, 所以 "n_B=1" 要写成 (1,2) 而不是 (1,1) (后者恒空)。
+        for lo_, hi_, nm in ((1, 2, "1"), (2, 3, "2"), (3, 4, "3"), (4, 1e9, "4p")):
+            m = (e.n_b.values >= lo_) & (e.n_b.values < hi_)
+            sub = e[m & hard_mask]
+            if len(sub) == 0 or (sub.cls == "true").sum() == 0:
+                continue
+            y_ = (sub.cls == "true").astype(int).values
+            row = dict(tag=a.tag, n_b_bin=nm, n_evt=int(e.evt[m].nunique()),
+                       n_edges=int(len(sub)), pos_rate=100.0 * float(y_.mean()),
+                       ap_model=ap_score(sub.score.values, y_),
+                       p_r90_model=prec_at_recall(sub.score.values, y_, 0.90))
+            for bn in ("base1", "base2"):
+                if bn in sub.columns and len(sub[bn].dropna()) == len(sub):
+                    row[f"ap_{bn}"] = ap_score(sub[bn].values, y_)
+                    row[f"p_r90_{bn}"] = prec_at_recall(sub[bn].values, y_, 0.90)
+            if np.isfinite(row.get("ap_base2", np.nan)):
+                row["gain_ap_vs_base2"] = row["ap_model"] - row["ap_base2"]
+                # [2026-09-30] **配对** bootstrap: 按事件重采样, 每次在同一批重采样事件上同时算
+                #   model 与 base2 的 AP 再作差 -> 这是"增益"的正确区间(消掉事件间方差)。
+                #   多 B 箱事件数很少, 没有区间就无法判断增益是否显著。
+                if a.n_boot > 0 and len(np.unique(y_)) == 2 and len(sub) > 4:
+                    _rng = np.random.default_rng(7)
+                    _ev = sub.evt.values
+                    _evu = np.unique(_ev)
+                    _groups = {q: np.nonzero(_ev == q)[0] for q in _evu}
+                    _sm, _sb = sub.score.values, sub["base2"].values
+                    _gs = []
+                    for _ in range(int(a.n_boot)):
+                        pick = _rng.choice(_evu, size=len(_evu), replace=True)
+                        idx = np.concatenate([_groups[q] for q in pick])
+                        _yy = y_[idx]
+                        if _yy.min() == _yy.max():
+                            continue
+                        _gs.append(ap_score(_sm[idx], _yy) - ap_score(_sb[idx], _yy))
+                    if len(_gs) >= 20:
+                        row["gain_lo"] = float(np.percentile(_gs, 2.5))
+                        row["gain_hi"] = float(np.percentile(_gs, 97.5))
+                        row["gain_p_pos"] = float(np.mean(np.array(_gs) > 0))
+            # 链级: 该 bin 事件里真值链的存活/完美率 (AND 语义, 一失毁全链)
+            cb = ch[(ch.n_chains_in_evt.values >= lo_) & (ch.n_chains_in_evt.values < hi_)]
+            if len(cb):
+                row["chain_surv"] = 100.0 * float(cb.surv.mean())
+                row["chain_full_surv"] = 100.0 * float(cb.full.mean()) if "full" in cb else np.nan
+            mb_rows.append(row)
+        if mb_rows:
+            mbd = pd.DataFrame(mb_rows)
+            print("\n===== [多 B 分层] 目标场景 (代理基线 base1=-|Δ起点|, base2=-(|Δ起点|+DOCA)) =====")
+            print("  n_B    事件数  难池边数  真边率% | AP_model  AP_base1  AP_base2 | 增益(vs base2) | 链存活%")
+            for _, r in mbd.iterrows():
+                print(f"  {r['n_b_bin']:>4}  {int(r['n_evt']):>6}  {int(r['n_edges']):>8}  "
+                      f"{r['pos_rate']:>6.1f} | {r['ap_model']:>8.4f}  {r.get('ap_base1', np.nan):>8.4f}  "
+                      f"{r.get('ap_base2', np.nan):>8.4f} | {r.get('gain_ap_vs_base2', np.nan):>+12.4f} "
+                      f"[{r.get('gain_lo', np.nan):>+.3f},{r.get('gain_hi', np.nan):>+.3f}] "
+                      f"P>0={r.get('gain_p_pos', np.nan):>4.2f} | {r.get('chain_surv', np.nan):>7.1f}")
+            _mp = "report_figs/bench_multib.csv"
+            os.makedirs("report_figs", exist_ok=True)
+            mbd.to_csv(_mp, mode="a", header=not os.path.exists(_mp), index=False)
+            print(f"  [已追加] {_mp}")
 
     # ---- 链层: AND 语义 (按链长分箱 + min 分数 + 反解单环节存活率) ----
     chs = {}

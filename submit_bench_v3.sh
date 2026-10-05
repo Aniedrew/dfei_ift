@@ -29,7 +29,7 @@ print('[PREFLIGHT] OK', torch.cuda.get_device_name(0))
 if [ $? -ne 0 ]; then
   N=0; F=logs/bench_v3.retry_count
   [ -f "$F" ] && N=$(cat "$F")
-  if [ "$N" -lt 200 ]; then
+  if [ "$N" -lt 1000 ]; then
     echo $((N + 1)) > "$F"
     echo "[PREFLIGHT] 失败, 60s 后重排 (第 $((N + 1)) 次)"
     sleep 60
@@ -37,7 +37,10 @@ if [ $? -ne 0 ]; then
     R=$(mktemp /tmp/resub_bench3_XXXXXX.sh)
     { echo '#!/bin/bash'
       printf 'cd %q || exit 1\n' "$PWD"
-      printf 'exec hep_sub submit_bench_v3.sh -argu %q -g ghigh -gpu 1 -cpu 4 -m 32000 -wt long -o logs/bench_v3.out -e logs/bench_v3.err\n' "$*"
+      # 注意: $* 已在上面 shift 掉 events -> 必须把 $EVENTS 显式放回首位,
+      #       否则重排后 events 会静默退回默认 200 (踩过)
+      printf 'exec hep_sub submit_bench_v3.sh -argu %q -g ghigh -gpu 1 -cpu 4 -m 32000 -wt long -o %q -e %q\n' \
+        "$EVENTS $*" "logs/bench_v3.out" "logs/bench_v3.err"
     } >"$R"
     env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" SHELL=/bin/bash TERM=dumb /bin/bash -l "$R"
     rm -f "$R"
@@ -45,17 +48,20 @@ if [ $? -ne 0 ]; then
   exit 0
 fi
 
+# 拿到可用 GPU 后立刻清零重试计数。否则计数跨作业累积 -> 一旦用满 200,
+# 之后提交的 bench 作业会一提交就静默退出(什么都不跑)。别删这行。
+echo 0 > logs/bench_v3.retry_count
+
 FAIL=0
 for spec in "$@"; do
   V="${spec%%:*}"
-  rest="${spec#*:}"
-  TAG="${rest%%:*}"
-  THR="${rest#*:}"
-  [ "$THR" = "$rest" ] && THR=0.9        # 未给第三段 -> 用 0.9 (与 v2 表一致)
-  echo "==== [bench] $(date +%H:%M:%S) version=$V tag=$TAG thr=$THR"
+  TAG="${spec#*:}"
+  echo "==== [bench] $(date +%H:%M:%S) version=$V tag=$TAG"
+  # thr 不在这里传: 由 analyze_prune_loss 从配置读 (各版本在各自工作点上算)
+  # csv 可用环境变量 BENCH_CSV 覆盖, 便于并发跑不同 events 的 bench 时不互相追加冲突
   python3 -u analyze_prune_loss.py --config config_files/eval_bench_v3_n90.yaml \
-    --version "$V" --tag "$TAG" --events "$EVENTS" --thr "$THR" \
-    --out report_figs --csv_name bench_auc_v3.csv --n_boot 200
+    --version "$V" --tag "$TAG" --events "$EVENTS" \
+    --out report_figs --csv_name "${BENCH_CSV:-bench_auc_v3_seed.csv}" --n_boot 200
   rc=$?
   echo "==== [bench] $(date +%H:%M:%S) $TAG EXIT=$rc"
   [ $rc -ne 0 ] && FAIL=$((FAIL + 1))
