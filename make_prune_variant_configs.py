@@ -194,6 +194,119 @@ VARIANTS = {
                  settings_extra=dict(monitor_metric="val_prune_ap",
                                      validate_prune_metric=True,
                                      validate_prune_events=200)),
+    # ---- 2026-09-30 v642 = v641 的公平重跑: 加早停 dead-band ----
+    # v641 停在 ep15 不是因为收敛, 而是难池 AP 在 ep0 抽到 0.777 的高点后一直没超过 ->
+    # patience 15 触发 (per-epoch 抖动 ~±0.03)。这里 patience 20 + min_delta 0.005,
+    # 让"不改善"必须是真的往下走, 而不是噪声。
+    "v642": dict(epochs=60, early_stop_patience=20, tag="v642_chainrecall_db", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 chain_recall_weight=5.0, chain_recall_edge_weight=5.0,
+                 chain_recall_thr=0.9, chain_recall_tau=0.1,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
+    # ==== 2026-09-30 层4: 依据"特征上界分析"(docs/feature_ceiling_analysis.md) 的三条平行臂 ====
+    # 该分析(GDBT, 按事件留出)结论: 现有 5+9+3 维边特征对"真边 vs 跨链假边"判别力 = AUC 0.502
+    # (随机); 而 (a) 两端生产顶点 3D 距离 |Δr| 单标量 = 0.704, (b) 正确 DOCA 在节点特征之上
+    # 再 +0.06 AUC (=0.738); 训练好的 GNN 同一任务只有 0.63 (=模型没用足节点信息)。
+    # 三条臂都以 v633 为底, 均把 ckpt/早停监控切到验收判据 val_prune_ap (与 v642 同口径,
+    # 保证四臂之间互比干净), 而不与 v633 的 val_combined_loss 口径混比。
+    # ---- v643 (A1): 顶点一致性**几何绝对量** [doca/100, log(doca), |Δ起点|/100] (+3 维) ----
+    # 旧 derived_vertex 只给比值 d_perp/(|Δz|+1) -> 绝对量级被除掉, 实测贡献≈0; 这里给绝对量。
+    # 用标准最小二乘解**现算**, 绕开上游 calculate_doca 的 t1 符号 bug(那列 log_DOCA_reco 是噪声)。
+    "v643": dict(epochs=60, early_stop_patience=20, tag="v643_vgeom", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, derived_vertex_geom=True,
+                 chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=12),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
+    # ---- v645 (A3): 两端节点特征**对称**直连到边 [x_i+x_j, |x_i-x_j|, x_i*x_j] (+24 维) ----
+    # 动机: 判别信息几乎全在节点侧, 而 GNN 没用足; 给边头一条直接的端点通道。
+    # 对称性: 用和/差/积 (天然交换不变), **不用** [x_i, x_j] 顺序拼接 (要靠人为定向, IP 相等时
+    #   退化为按下标排序 -> 会像 0702 的 delta_z0 那样带进顺序信息)。
+    "v645": dict(epochs=60, early_stop_patience=20, tag="v645_pairsym", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, derived_pair_sym=True,
+                 chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=33),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
+    # ---- v646 (A4): **只训剪枝** (纯配置) -> 检验"多任务干扰"假说 ----
+    # 关掉全部非剪枝任务损失: LCA 分类 / 链 LCA / 链对比 / PV 关联; 保留 node+edge 剪枝 + ranking
+    # (ranking 属于剪枝头)。若剪枝曲线因此显著抬高, 说明此前是被其它 6 个任务拖住的。
+    "v646": dict(epochs=60, early_stop_patience=20, tag="v646_pruneonly", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9),
+                 chain_contrastive_weight=0.0, thr=0.95,
+                 lca_weight=0.0, chain_lca_loss_weight=0.0, pv_asso_weight=0.0,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
+    # ---- v647 (总): A1 + A3 同时上 (doca/logdoca/|Δ起点| + 端点对称直连, +27 维) ----
+    # ---- v648 (P1): v643(修正 DOCA 几何) + 竞争/排他上下文 (+6 维, 共 18 维) ----
+    # 依据: 大样本探针里 deg_s(+0.0235) 是仅次于 doca(+0.1066) 的特征 -> 先把这条手工版本
+    #   拿到主模型上验证, 作为"注意力/匹配"结构方案的**下界对照**。
+    "v648": dict(epochs=60, early_stop_patience=20, tag="v648_geo_comp", dz_dict=True,
+                 derived_prune=True, derived_triangle=True,
+                 derived_vertex_geom=True, derived_comp=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=18),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
+    "v647": dict(epochs=60, early_stop_patience=20, tag="v647_vgeom_pairsym", dz_dict=True,
+                 derived_prune=True, derived_triangle=True,
+                 derived_vertex_geom=True, derived_pair_sym=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=36),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
+    # ==== 2026-10-05 层5: 把"几何量直接耦合到注意力"搬进主模型 (v637 的单变量补丁) ====
+    # 依据: (1) bench 200 事件里 v637 (line-graph 边-边注意力) 难池 AP 0.6553 < v633 0.6647
+    #           -> 纯结构注意力没帮上忙; (2) 小模型探针里唯一值得搬的差异是 Graphormer 式的
+    #           **几何 pair-bias** (把几何量直接加到 attention logit 上, 而不是当第 N 个输入列)。
+    # ---- v649 = v637 + 几何 pair-bias (严格单变量: 除 bias 外与 v637 逐键一致) ----
+    # bias 列 = der_edges 的列 0/4/6 = dR(两端生产顶点 3D 距离) / ΔIP / dzp(沿合动量的纵向分离),
+    #   这是 v633 那 9 维里真实存在的几何量 (doca 只在 derived_vertex_geom 的 v643/v648 里, 本臂不带);
+    #   已核对这 9 列在**端点交换下全对称** (dpT/dzp 的符号被 up 抵消) -> bias 不会引入顺序泄漏。
+    # 单变量理由: 与 v637 构成"只多一个 bias"的干净对照; 与 v633 构成"line-graph + bias"的对照。
+    "v649": dict(epochs=60, early_stop_patience=15, tag="v649_lg_bias", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9,
+                         line_graph_attn=True, line_graph_rounds=1, line_graph_heads=4,
+                         line_graph_hidden=32, line_graph_bias_cols=[0, 4, 6]),
+                 chain_contrastive_weight=0.5, thr=0.95),
+    # ---- v650 = v649 + 容量 (rounds 3 / hidden 64 / 邻居上限 32->64 / bias 隐层 64) ----
+    # 动机: v637 的注意力容量很小 (1 轮 / hidden 32 / 邻居 32), "没用"可能只是容量不够。
+    # 邻居上限取 64 而**非不限**: build_line_graph 在不裁剪时代价是 Σ_v deg(v)^2, 真实每事件
+    #   ~95 径迹 -> Σ d² ~ 8e5 对/事件, 多事件 batch 下有显存风险; 64 已比 v637 翻倍且可控。
+    "v650": dict(epochs=60, early_stop_patience=15, tag="v650_lg_bias_cap", dz_dict=True,
+                 derived_prune=True, derived_triangle=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=9,
+                         line_graph_attn=True, line_graph_rounds=3, line_graph_heads=4,
+                         line_graph_hidden=64, line_graph_max_neighbors=64,
+                         line_graph_bias_cols=[0, 4, 6], line_graph_bias_hidden=64),
+                 chain_contrastive_weight=0.5, thr=0.95),
 }
 
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
@@ -244,7 +357,15 @@ def main():
                        ("chain_recall_weight", "chain_recall_weight"),
                        ("chain_recall_edge_weight", "chain_recall_edge_weight"),
                        ("chain_recall_thr", "chain_recall_thr"),
-                       ("chain_recall_tau", "chain_recall_tau")]:
+                       ("chain_recall_tau", "chain_recall_tau"),
+                       # [2026-09-30] 层4: 顶点几何绝对量 / 端点对称直连 / 只训剪枝
+                       ("derived_vertex_geom", "derived_vertex_geom"),
+                       ("derived_pair_sym", "derived_pair_sym"),
+                       ("lca_weight", "lca_weight"),
+                       ("chain_lca_loss_weight", "chain_lca_loss_weight"),
+                       ("pv_asso_weight", "pv_asso_weight"),
+                       # [2026-10-01] 竞争/排他性上下文特征
+                       ("derived_comp", "derived_comp")]:
             if k in v:
                 c["inference"][key] = v[k]
         if v.get("dz_dict"):
