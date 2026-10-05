@@ -67,6 +67,17 @@ class ChunkDataset(IterableDataset):
         self.n_chunks = n_chunks
         self.mode = mode
         self.configs = configs
+        # [2026-09-30 FIX] 原实现有**两处无种子的随机源**, 导致跨版本评测不可比:
+        #   (a) _generate_groups 里的 np.random.choice 决定"每个 chunk 取哪些文件" (下面循环就会调用);
+        #   (b) 第 ~87 行 self.seeds = torch.randint(0,1000,(1000,)) 决定"每个 chunk 内事件的打乱顺序"。
+        # 后果: 每次进程跑出的"前 N 个事件"是**不同的随机抽样** —— 实测 6 个版本都自称 "200 事件",
+        #   但 tt 边总数 871638~935662、真值链 127~148 各不相同, 而这些是纯数据量 (文件列表本身是
+        #   确定的 sorted(glob)[:n])。任何"同池比较"的结论因此都不成立。
+        # 修法: 用 settings.data_seed 固定 (默认 0) -> 同配置每次跑抽到同一批事件。只影响"抽哪些事件/
+        #   事件顺序", 不改变数据内容。
+        self._data_seed = int(self.configs.get("settings", {}).get("data_seed", 0))
+        np.random.seed(self._data_seed)
+        _gseed = torch.Generator().manual_seed(self._data_seed)
         cumulative_sizes = [0]
         total = 0
         file_index = []
@@ -84,7 +95,7 @@ class ChunkDataset(IterableDataset):
             self.n_files[sample] = len(self.file_paths[sample])
         self.file_paths = list(chain.from_iterable(self.file_paths[sample] for sample in self.file_paths.keys()))
 
-        self.seeds = torch.randint(0, 1000, (1000,))
+        self.seeds = torch.randint(0, 1000, (1000,), generator=_gseed)   # [2026-09-30] 加种子
         self.seed_tracker = 0
 
     @staticmethod
