@@ -307,6 +307,28 @@ VARIANTS = {
                          line_graph_hidden=64, line_graph_max_neighbors=64,
                          line_graph_bias_cols=[0, 4, 6], line_graph_bias_hidden=64),
                  chain_contrastive_weight=0.5, thr=0.95),
+    # ---- v651 = v648 + line-graph 注意力 + 几何 pair-bias (2026-10-06) ----
+    # 动机: 500 事件 bench (n=5964, SE≈0.006) 把底子排名**重排**了 —— v623/v624/v648 属第一
+    #   梯队 (0.6524~0.6534), 而 v633 "clean stack" 反而低 0.016:
+    #     v633 = v624 + (chain_lca_filter / edge_dz_ip_canon / ranking / 链对比 / event_bias) -> -0.016
+    #     v643 = v633 + 顶点几何 -> +0.000;  v648 = v643 + 竞争上下文 (derived_comp) -> +0.015
+    #   即"整套堆叠"轻微有害, 而唯一有效的新特征是把 deg(竞争度) 类上下文加进去。
+    #   所以把"几何 bias 能不能救 line-graph 注意力"放到**第一梯队**的底子上再问一遍 (与 v649 并行)。
+    # bias 列 = der_edges 的 9/10/11 = doca/100, log(doca+1e-5), |Δ起点|/100 (derived_vertex_geom),
+    #   **与探针里最强的 bias 列完全一致** (探针 permutation importance: doca +0.1066 排第一)。
+    # 单变量: 除 line_graph_* 外与 v648 逐键一致。
+    "v651": dict(epochs=60, early_stop_patience=20, tag="v651_geo_bias", dz_dict=True,
+                 derived_prune=True, derived_triangle=True,
+                 derived_vertex_geom=True, derived_comp=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=18,
+                         line_graph_attn=True, line_graph_rounds=1, line_graph_heads=4,
+                         line_graph_hidden=32, line_graph_bias_cols=[9, 10, 11]),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
 }
 
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
