@@ -26,6 +26,14 @@ def metrics_eval(metrics_path, configs, version):
 
 
 def plot_sig_pv_missasso(df, version, signal, log_dir="lightning_logs"):
+    # [2026-10-06 FIX] 这些列由 PV 关联任务产出; 纯剪枝配置 (如 v646: pv_asso_weight=0) 不产出它们。
+    #   原来直接取 _df["true_pv"] 会 KeyError, 让训练自带的 test 阶段整体崩掉 (EXIT=1),
+    #   掩盖了"训练其实已跑完、ckpt 完好"这一事实 (v646 实测)。缺列时跳过画图并明确说明。
+    _need = ("true_pv", "pred_pv", "minIP_pv", "npvs", "num_pvs")
+    _missing = [c for c in _need if c not in df.columns]
+    if _missing:
+        print(f"[plot] 跳过 PV 关联 (sig) 画图: 缺列 {_missing} (通常是未启用 PV 关联任务的配置)")
+        return {}
     # Per track quantity
     if "inclusive" not in signal:
         sig_df = df[df["SigMatch"] == 1]
@@ -70,6 +78,13 @@ def plot_sig_pv_missasso(df, version, signal, log_dir="lightning_logs"):
 
 
 def plot_sig_b_system_pv_missasso(df, version, signal, log_dir="lightning_logs"):
+    # [2026-10-06 FIX] 同 plot_sig_pv_missasso: 缺列时返回零三元组, 而不是让 test 崩掉
+    #   (调用方 acc_pv_asso 按三元组解包, 会把它记成 0.00)。
+    _need = ("true_pv", "pred_pv_b_lvl", "npvs", "num_pvs")
+    _missing = [c for c in _need if c not in df.columns]
+    if _missing:
+        print(f"[plot] 跳过 PV 关联 (B 系统) 画图: 缺列 {_missing}")
+        return (0, 0, 0)
     # B level quantity
     if "inclusive" not in signal:
         sig_df = df[df["SigMatch"] == 1]
