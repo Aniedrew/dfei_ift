@@ -29,7 +29,8 @@ print('[PREFLIGHT] OK', torch.cuda.get_device_name(0))
 if [ $? -ne 0 ]; then
   N=0; F=logs/bench_v3.retry_count
   [ -f "$F" ] && N=$(cat "$F")
-  if [ "$N" -lt 1000 ]; then
+  # [2026-10-07] 1000 在集群过载时约 29h 就耗尽 -> 改为实际无限 (等卡而不是放弃)
+  if [ "$N" -lt 100000 ]; then
     echo $((N + 1)) > "$F"
     echo "[PREFLIGHT] 失败, 60s 后重排 (第 $((N + 1)) 次)"
     sleep 60

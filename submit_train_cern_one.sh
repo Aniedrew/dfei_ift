@@ -37,7 +37,10 @@ echo "CONFIG      : $CONFIG_FILE"
 echo "========================================"
 
 # === 自动重试: 失败后立即重排 (固定节点), 几乎无限次 ===
-MAX_RETRY=1000
+# [2026-10-07] 上限 1000 在集群过载时不够: 60s/次 + 排队周转 ~105s -> 约 29h 就耗尽,
+#   而 2026-10-06/07 集群 3451 个作业在跑、预检连续失败 500+ 次, 作业会在等待期"静默阵亡"
+#   (v650 已实际死过一次)。这里提到实际无限, 让作业一直留在队里等卡, 而不是放弃。
+MAX_RETRY=100000
 RETRY_SLEEP=60
 RETRY_COUNT_FILE=/lzufs/home/guoqingxiang/dfei/scalable_mtl_hgnn/logs/${NAME}.retry_count
 
