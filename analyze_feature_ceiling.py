@@ -131,6 +131,11 @@ def collect(a):
             if not keep.any():
                 continue
             kk = np.nonzero(keep)[0]
+            # [2026-10-08 FIX D1] 索引空间混用: kk 是**事件内**的位置, 而 x_raw/der9/der12 是
+            #   **整个 batch** 的边数组 -> 直接用 x_raw[kk] 会取到 batch 前几条边 (第一个事件),
+            #   即"除第一个事件外, raw5+der9+vrt3 共 17 列全是别的事件的边特征", 且不报错。
+            #   正确做法: 先用 em (batch 级掩码) 把事件内位置映射回 batch 边下标, 再索引。
+            gidx = np.nonzero(em.numpy())[0]                 # 事件内位置 -> batch 边下标
             # ---- 修正几何: 两条径迹所在直线的最近距离(DOCA) + 两端生产顶点距离(|Δ起点|) ----
             xt = x_node[gt]                                     # 该事件节点特征 (归一化)
             def _rc(nm, col, _xt=xt):
@@ -168,7 +173,7 @@ def collect(a):
             _mut = ((_cs[:, 0] == 0) & (_ct[:, 0] == 0)).astype(np.float32)[:, None]
             ctx = np.concatenate([_cs, _ct, _mut], 1)
             node_pair = np.concatenate([x_node[gt[loc[0]]], x_node[gt[loc[1]]]], axis=1)   # [E,16]
-            X = np.concatenate([x_raw[kk], der9[kk], der12[kk][:, 9:], node_pair[kk],
+            X = np.concatenate([x_raw[gidx][kk], der9[gidx][kk], der12[gidx][:, 9:][kk], node_pair[kk],
                                 geo[kk], ctx[kk]], axis=1)
             rows["X"].append(X.astype(np.float32))
             rows["y"].append((cls[kk] == "true").astype(np.int8))

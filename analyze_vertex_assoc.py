@@ -212,13 +212,22 @@ def _attn_class():
     import torch.nn as nn
 
     def _sparsemax(z):
-        """Martins & Astudillo 2016: sparsemax(z) = argmin_p ||p - z||^2 s.t. p 在单纯形上"""
+        """Martins & Astudillo 2016: sparsemax(z) = argmin_p ||p - z||^2 s.t. p 在单纯形上。
+
+        [2026-10-08 FIX D2] 原实现用 `(cumsum(z) - 1) > 0` 定支撑集, 判据错误 ->
+        输出**根本不是概率分布** (实测: z=[0.5,0.4,0.1] 本身就在单纯形上, 却输出和=2.5;
+        z=[0.6,0.6,0.6] 输出和=3.0)。正确支撑大小 = 满足
+        `cumsum_k(z) - 1 < k·z_(k)` 的最大 k (等价于 `1 + k·z_(k) > cumsum_k`),
+        再取 tau = (cumsum_k - 1)/k, p = relu(z - tau)。
+        """
         z = z - z.amax(-1, keepdim=True)
         zs, _ = torch.sort(z, dim=-1, descending=True)
         kk = torch.arange(1, z.size(-1) + 1, device=z.device, dtype=z.dtype)
-        cum = zs.cumsum(-1) - 1.0
-        k = (cum > 0).sum(-1, keepdim=True).clamp(min=1)
-        tau = cum.gather(-1, (k - 1)).div(k)
+        cum = zs.cumsum(-1)
+        # 逐 k 判据; 用累计与保证取到"最大 k"(判据在 k 上单调下降, 但保险起见不直接 sum)
+        ok = (cum - 1.0 < kk * zs).to(z.dtype)
+        k = ok.cumprod(-1).sum(-1, keepdim=True).clamp(min=1).long()   # gather 需要 int64
+        tau = (cum.gather(-1, k - 1) - 1.0) / k.to(cum.dtype)
         return (z - tau).clamp(min=0.0)
 
     def _topk_norm(sc, k):
@@ -377,6 +386,13 @@ def cmd_train(a):
                 bias_idx.append(c.index(names.index(nm)))
         if not bias_idx:
             print("[train] WARN: 特征里没有几何列, 几何 bias 退化为 none")
+        elif len(bias_idx) < len(_bn):
+            # [2026-10-08 FIX D3] 原来只在"一个都没匹配"时才告警 -> 部分匹配 (如 geom4 的
+            #   dz0/logDOCA 不在 node+geo+ctx 里) 会**静默退化**成列更少的那一档 (历史踩过:
+            #   --attn_bias geom4 静默等价于 geom, 单变量对照因此失效)。
+            _miss = [n for n in _bn if not (n in names and names.index(n) in c)]
+            print(f"[train] WARN: --attn_bias {a.attn_bias} 只匹配到 {len(bias_idx)}/{len(_bn)} 列 "
+                  f"(缺 {_miss}) -> 实际等价于列更少的那一档, 不是你以为的配置!")
     net = _build_model(a.model, Xf.shape[1], a.hidden, a.heads, a.layers, a.dropout,
                        a.attn_fn, a.attn_topk, bias_idx)
 

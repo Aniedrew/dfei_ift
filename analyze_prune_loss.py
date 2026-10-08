@@ -514,14 +514,17 @@ def main():
             print(f"  [已追加] {_mp}")
 
     # ---- 链层: AND 语义 (按链长分箱 + min 分数 + 反解单环节存活率) ----
+    # [2026-10-08 FIX D4] 原来反解用指数 1/min(lo_+2, 5): band (0,3) 恰好得 2, 但 (3,4)/(4,5)
+    #   都被算成 1/5 (应为 1/3 / 1/4) -> 3 环节与 4 环节链的单环节存活率被系统性低估,
+    #   让"长链更差是纯长度效应还是模型更弱"这个核心判读失真。改为每个 band 显式给代表性链长 n。
     chs = {}
-    for lo_, hi_, nm in ((0, 3, "2"), (3, 4, "3"), (4, 5, "4"), (5, 1e9, "5p")):
+    for lo_, hi_, nm, nrep in ((0, 3, "2", 2), (3, 4, "3", 3), (4, 5, "4", 4), (5, 1e9, "5p", 5)):
         m = (ch.n_daughters >= lo_) & (ch.n_daughters < hi_)
         S = 100.0 * float(ch.surv[m].mean()) if m.any() else np.nan
         chs[f"chain_surv_{nm}"] = S
         # 若单环节存活率 p 均匀, 长 n 链存活 = p^n -> 反解 p = S^(1/n)。跨链长若 p 一致,
         # 说明"长链更差"纯粹是长度效应; 若 p 随 n 下降, 才是模型对长链真的更弱。
-        chs[f"per_link_p_{nm}"] = float((S / 100.0) ** (1.0 / min(lo_ + 2, 5))) if np.isfinite(S) else np.nan
+        chs[f"per_link_p_{nm}"] = float((S / 100.0) ** (1.0 / nrep)) if np.isfinite(S) else np.nan
     _ms = ch.chain_min_score.dropna().values if "chain_min_score" in ch else np.zeros(0)
     chs["chain_minscore_p10"] = float(np.percentile(_ms, 10)) if len(_ms) else np.nan
     chs["chain_minscore_p50"] = float(np.percentile(_ms, 50)) if len(_ms) else np.nan
