@@ -178,13 +178,22 @@ class LineGraphAttention(nn.Module):
 
         # 几何 pair-bias: 只依赖静态几何量, 与轮数无关 -> 循环外算一次
         bias_term = None
-        if (self.bias_mlp is not None and bias_x is not None
-                and bias_x.shape[0] == e and bias_x.shape[1] > max(self.bias_cols)):
-            b = bias_x[:, self.bias_cols].to(dtype=h.dtype, device=h.device)
-            bi, bj = b[ls], b[ld]
-            # [b_e, b_f, |b_e-b_f|, b_e*b_f] 对 (e,f) 交换对称 (不用顺序拼接)
-            feat = torch.cat([bi, bj, (bi - bj).abs(), bi * bj], dim=-1)
-            bias_term = self.bias_mlp(feat)                          # (P, heads)
+        if self.bias_mlp is not None:
+            if bias_x is None or bias_x.shape[0] != e or bias_x.shape[1] <= max(self.bias_cols):
+                # [2026-10-08 FIX S2] 原来这里**静默**退化成"无 bias" -> 配置写了 bias_cols 但
+                #   实际没生效却不报错 (本项目反复出现的"开关没生效"模式)。首次遇到时告警一次。
+                if not getattr(self, "_warned_no_bias", False):
+                    self._warned_no_bias = True
+                    _why = ("bias_x=None (der_edges 未挂上?)" if bias_x is None
+                            else f"bias_x.shape={tuple(bias_x.shape)} 与需要的 (E={e}, <= {max(self.bias_cols)+1} 列) 不匹配")
+                    print(f"[line_graph] WARN: 配了 line_graph_bias_cols={self.bias_cols} 但本步用不上 "
+                          f"({_why}) -> 该步退化为无 bias")
+            else:
+                b = bias_x[:, self.bias_cols].to(dtype=h.dtype, device=h.device)
+                bi, bj = b[ls], b[ld]
+                # [b_e, b_f, |b_e-b_f|, b_e*b_f]; b 为逐边量, 故偏置是"有向消息"的合法函数
+                feat = torch.cat([bi, bj, (bi - bj).abs(), bi * bj], dim=-1)
+                bias_term = self.bias_mlp(feat)                          # (P, heads)
 
         for _ in range(self.n_rounds):
             q = self.q(h).view(e, self.n_heads, self.h)

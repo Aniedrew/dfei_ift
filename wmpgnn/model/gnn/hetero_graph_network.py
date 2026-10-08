@@ -189,6 +189,17 @@ class HeteroGraphNetwork(pl.LightningModule):
         self._line_attn = None
         self._line_active = False
         if context_last and bool(config.get("line_graph_attn", False)):
+            # [2026-10-08 FIX S3] bias_cols 的越界与"隐性耦合"守卫。
+            #   越界时偏置**永远用不上**却静默失效; 且 9/10/11 这三列的含义依赖 derived_vertex:
+            #   一旦同时打开 derived_vertex, 列序前移 -> 指向 zcpa/flight/collin 而非
+            #   doca/logdoca/|Δ起点|, 不报错但语义完全变了 (v651 恰好没开 derived_vertex 才对)。
+            _bcols = [int(c) for c in (config.get("line_graph_bias_cols", []) or [])]
+            _ke_bias = int(config.get("extra_edge_dim", 0))
+            assert not _bcols or max(_bcols) < _ke_bias, (
+                f"line_graph_bias_cols={_bcols} 越界: extra_edge_dim={_ke_bias} -> 偏置永远用不上 (静默失效)")
+            if _bcols and bool(config.get("derived_vertex", False)) and max(_bcols) <= 11:
+                print("[line_graph] WARN: bias_cols 含 9..11 且 derived_vertex=True -> "
+                      "这几列实际是 zcpa/flight/collin, 不是 doca/logdoca/|Δ起点| (列索引被前移)")
             self._line_attn = LineGraphAttention(
                 _edim,
                 n_rounds=int(config.get("line_graph_rounds", 1)),

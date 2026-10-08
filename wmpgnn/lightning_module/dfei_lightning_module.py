@@ -189,7 +189,8 @@ def track_minip(batch):
 
 
 def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False,
-                            use_vertex_geom=False, use_pair_sym=False, use_comp=False):
+                            use_vertex_geom=False, use_pair_sym=False, use_comp=False,
+                            sgn_tie_zero=False):
     """从**原始**节点/边特征现算剪枝 MLP 的派生输入 (不重产数据)。
 
     动机: 剪枝 MLP 的输入只有 8 维节点特征 / 5 维边特征, 缺的正是
@@ -297,8 +298,21 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False,
     eb = torch.sqrt(pmod[b] ** 2 + mp ** 2)
     m2 = (ea + eb) ** 2 - ((px[a] + px[b]) ** 2 + (py[a] + py[b]) ** 2 + (pz[a] + pz[b]) ** 2)
     mpipi = torch.sqrt(m2.clamp(min=0))
-    up = ip[a] <= ip[b]                                        # a 更靠上游
-    sgn = torch.where(up, 1.0, -1.0)
+    # [2026-10-08 FIX D5] ip 并列时的定向二义性。
+    #   原式 `up = ip[a] <= ip[b]` 在 ip[a]==ip[b] 时把**两个方向都**判为"上游"(sgn=+1),
+    #   而 pT[a]-pT[b] 与 P·(A_a-A_b) 交换端点会变号 -> 列3 dpT 与列6 dzp 随边方向翻符号
+    #   (与 0702 delta_z0 同类的"顺序信息")。并列并不罕见: 无 tr-pv 关联的径迹被兜底成同一 ip,
+    #   实测占 tt 边的 6.55%。
+    #   sgn_tie_zero=True 时并列取 sgn=0: **非并列边数值完全不变**, 并列边彻底对称
+    #   (那里"谁更上游"本就无定义)。这是**特征定义变更** -> 用配置开关控制, 默认 False
+    #   保持历史口径 (与已训练版本可比)。
+    up = ip[a] <= ip[b]                                        # a 更靠上游 (含并列)
+    if sgn_tie_zero:
+        sgn = torch.where(ip[a] < ip[b], torch.ones_like(ip[a]),
+                          torch.where(ip[a] > ip[b], -torch.ones_like(ip[a]),
+                                      torch.zeros_like(ip[a])))
+    else:
+        sgn = torch.where(up, 1.0, -1.0)
     dpT = sgn * (pT[a] - pT[b])                                # 规范化: 下游 − 上游
     dIP = torch.where(up, ip[b] - ip[a], ip[a] - ip[b])        # 同样规范化为非负量级
     P = torch.stack([px[a] + px[b], py[a] + py[b], pz[a] + pz[b]], 1)
@@ -335,7 +349,14 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False,
         F1 = A3 + ta.unsqueeze(1) * ua                         # 线 a 上的垂足
         F2 = B3 + tb.unsqueeze(1) * ub                         # 线 b 上的垂足
         zcpa = torch.where(par, 0.5 * (zp[a] + zp[b]), 0.5 * (F1[:, 2] + F2[:, 2]))
-        z_assoc = torch.where(ip[a] <= ip[b], z_pv_assoc[a], z_pv_assoc[b])
+        # [2026-10-08 FIX D5/S4] 同上: 原式在 ip 并列时按方向取端点 -> flight 随边方向变。
+        #   sgn_tie_zero=True 时并列取两端均值 (对称)。
+        if sgn_tie_zero:
+            z_assoc = torch.where(ip[a] < ip[b], z_pv_assoc[a],
+                                  torch.where(ip[a] > ip[b], z_pv_assoc[b],
+                                              0.5 * (z_pv_assoc[a] + z_pv_assoc[b])))
+        else:
+            z_assoc = torch.where(ip[a] <= ip[b], z_pv_assoc[a], z_pv_assoc[b])
         flight = (zcpa - z_assoc).abs()
         # 两直线最近距离: 非平行用两垂足间距; 平行(垂足不唯一)用 w0 的垂直分量 (良态)
         d_par = torch.linalg.norm(w0 - dd.unsqueeze(1) * ua, dim=1)
@@ -728,6 +749,9 @@ class DFEILightningModule(L.LightningModule):
         #   与旧 derived_vertex 的区别: 旧版只给比值 d_perp/(|Δz|+1), 把绝对量级除掉了 ->
         #   实测贡献≈0 (见 docs/feature_ceiling_analysis.md)。
         self.der_vgeom = bool(self.configs.get("derived_vertex_geom", False))
+        # [2026-10-08] ip 并列时的定向取 0 (对称化, 见 derive_pruning_features 里 D5 的说明)。
+        #   **默认 False = 历史口径**, 保证与已训练版本逐位可比; 新臂可显式打开。
+        self.der_sgn_tiez = bool(self.configs.get("der_sgn_tie_zero", False))
         # [2026-09-30] 两端节点特征**对称**直连到边 ([x_i+x_j, |x_i-x_j|, x_i*x_j], 24 维)。
         self.der_psym = bool(self.configs.get("derived_pair_sym", False))
         # [2026-10-01] derived_comp: 竞争/排他性上下文 (6 维) —— 注意力/匹配方向的最小手工版
@@ -1215,7 +1239,8 @@ class DFEILightningModule(L.LightningModule):
                                                        use_vertex=self.der_vertex,
                                                        use_vertex_geom=self.der_vgeom,
                                                        use_pair_sym=self.der_psym,
-                                                       use_comp=self.der_comp)
+                                                       use_comp=self.der_comp,
+                                                       sgn_tie_zero=self.der_sgn_tiez)
                 batch['tracks'].x_der = _nd_d
                 batch[('tracks', 'to', 'tracks')].der_edges = _ed_d
                 if mode == "train" and self.trn_log is not None and "der_stat" not in self.trn_log:
