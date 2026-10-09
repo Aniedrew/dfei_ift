@@ -188,6 +188,16 @@ def track_minip(batch):
     return out.scatter_reduce(0, tt_pv.edge_index[0].long(), v, reduce="amin", include_self=True)
 
 
+# [2026-10-09 FIX] derived_pair_sym 的列数 = 3 × PSYM_NODE_COLS, **必须与会计式一致**。
+#   原实现用 `3 × X.shape[1]`, 而注释与会计式都假设 X 宽 8 (-> 24 维)。训练路径里
+#   batch['tracks'].x 实测为 13 列 -> 39 维 -> 边派生总列数 48, 与配置 extra_edge_dim=33 冲突,
+#   结果是 v645/v647 在 2500+ 次尝试里**每次都在 epoch 0 崩**
+#   (RuntimeError: mat1 and mat2 shapes cannot be multiplied (34058x48 and 33x16)),
+#   从未真正训练过。这里把来源固定为**前 8 个节点列**(即注释所指的"原始节点特征"),
+#   让训练/评估/配置三处宽度一致。
+PSYM_NODE_COLS = 8
+
+
 def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False,
                             use_vertex_geom=False, use_pair_sym=False, use_comp=False,
                             sgn_tie_zero=False):
@@ -410,7 +420,12 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False,
         # 所以 24 维必须先 concat 成 [n_e,24] 再**逐列拆开** append —— 冒烟把三种错法都抓到了:
         # ① `cols += [A,B,C]` 把三个 2D 张量当三列; ② 直接 append [n_e,24] 与其它 [n_e] 无法 stack;
         # ③ reshape(-1) 成 [n_e*24] 同样无法 stack。
-        _ps = torch.cat([X[a] + X[b], (X[a] - X[b]).abs(), X[a] * X[b]], dim=-1)
+        # [2026-10-09 FIX] 只用**前 PSYM_NODE_COLS 列**节点特征, 否则列数会随 X 实际宽度变化
+        #   (训练路径 X=13 列 -> 39 维, 与会计式的 24 冲突, 见文件顶部 PSYM_NODE_COLS 说明)。
+        if X.shape[1] < PSYM_NODE_COLS:
+            raise RuntimeError(f"use_pair_sym 需要至少 {PSYM_NODE_COLS} 列节点特征, 实际 {X.shape[1]} 列")
+        _X = X[:, :PSYM_NODE_COLS]
+        _ps = torch.cat([_X[a] + _X[b], (_X[a] - _X[b]).abs(), _X[a] * _X[b]], dim=-1)
         for _i in range(_ps.shape[1]):
             cols.append(_ps[:, _i])
     if use_comp:
@@ -758,7 +773,7 @@ class DFEILightningModule(L.LightningModule):
         self.der_comp = bool(self.configs.get("derived_comp", False))
         self.node_der_dim = 7 if self.der_prune else 0
         self.edge_der_dim = (7 + (2 if self.der_tri else 0) + (3 if self.der_vertex else 0)
-                             + (3 if self.der_vgeom else 0) + (24 if self.der_psym else 0)
+                             + (3 if self.der_vgeom else 0) + (3 * PSYM_NODE_COLS if self.der_psym else 0)
                              + (6 if self.der_comp else 0)) \
             if self.der_prune else 0
         if self.der_prune:

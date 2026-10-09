@@ -410,7 +410,9 @@ def cmd_train(a):
 
     if a.match != "none" and a.model != "attn":
         raise SystemExit("--match 需要 --model attn (Sinkhorn 按事件做, 只有 attn 路径有事件分批)")
-    need_ids = (a.match == "sinkhorn") or (a.chain_loss_w > 0)
+    # [2026-10-09 A2] attn 路径一律加载事件内 id: 这样**基线 (chain_loss_w=0) 也会计算链级指标**,
+    #   否则基线不打印"链存活@边精度90%", 无法与加了链级损失的臂对比 (踩过一次)。
+    need_ids = (a.model == "attn") or (a.match == "sinkhorn") or (a.chain_loss_w > 0)
 
     # [2026-10-03] 之前 --seed 只控制"事件切分"与 batch 打乱, **没控制模型初始化/dropout** ->
     # 同一 seed 重跑结果也不同。这里统一固定 numpy/torch 种子, 保证可复现 (多种子对照的前提)。
