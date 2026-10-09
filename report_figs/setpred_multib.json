@@ -1,0 +1,117 @@
+{
+ "config": {
+  "npz": "report_figs/feat_ceiling_nb.npz",
+  "epochs": 60,
+  "seed": 0,
+  "slots": 6,
+  "assign": "hungarian",
+  "min_nb": 2,
+  "max_nb": 1000000000,
+  "d": 64,
+  "heads": 4,
+  "edge_bias": true,
+  "match_tau": 0.5,
+  "match_iters": 10,
+  "dust_logit": -1.0,
+  "scipy": true
+ },
+ "n_events": {
+  "train": 417,
+  "val": 139,
+  "test": 140
+ },
+ "setpred": {
+  "1": {
+   "n_gt": 0,
+   "finding_eff": NaN,
+   "fake_rate": NaN,
+   "perfect_rate": NaN,
+   "n_pred": 0,
+   "n_found": 0,
+   "n_fake": 0,
+   "n_perfect": 0
+  },
+  "2": {
+   "n_gt": 278,
+   "finding_eff": 0.5755395683453237,
+   "fake_rate": 0.24778761061946902,
+   "perfect_rate": 0.16371681415929204,
+   "n_pred": 226,
+   "n_found": 160,
+   "n_fake": 56,
+   "n_perfect": 37
+  },
+  ">=3": {
+   "n_gt": 3,
+   "finding_eff": 0.6666666666666666,
+   "fake_rate": 0.0,
+   "perfect_rate": 0.0,
+   "n_pred": 2,
+   "n_found": 2,
+   "n_fake": 0,
+   "n_perfect": 0
+  },
+  "ALL": {
+   "n_gt": 281,
+   "finding_eff": 0.5765124555160143,
+   "fake_rate": 0.24561403508771928,
+   "perfect_rate": 0.16228070175438597,
+   "n_pred": 228,
+   "n_found": 162,
+   "n_fake": 56,
+   "n_perfect": 37
+  }
+ },
+ "baseline_cc": {
+  "1": {
+   "n_gt": 0,
+   "finding_eff": NaN,
+   "fake_rate": NaN,
+   "perfect_rate": NaN,
+   "n_pred": 0,
+   "n_found": 0,
+   "n_fake": 0,
+   "n_perfect": 0
+  },
+  "2": {
+   "n_gt": 278,
+   "finding_eff": 0.6438848920863309,
+   "fake_rate": 0.046511627906976744,
+   "perfect_rate": 0.3953488372093023,
+   "n_pred": 172,
+   "n_found": 179,
+   "n_fake": 8,
+   "n_perfect": 68
+  },
+  ">=3": {
+   "n_gt": 3,
+   "finding_eff": 0.0,
+   "fake_rate": 1.0,
+   "perfect_rate": 0.0,
+   "n_pred": 1,
+   "n_found": 0,
+   "n_fake": 1,
+   "n_perfect": 0
+  },
+  "ALL": {
+   "n_gt": 281,
+   "finding_eff": 0.6370106761565836,
+   "fake_rate": 0.05202312138728324,
+   "perfect_rate": 0.3930635838150289,
+   "n_pred": 173,
+   "n_found": 179,
+   "n_fake": 9,
+   "n_perfect": 68
+  }
+ },
+ "edge_level": {
+  "setpred": {
+   "auc": 0.5876506105962738,
+   "ap": 0.5065442797350845
+  },
+  "baseline": {
+   "auc": 0.844290416699164,
+   "ap": 0.7936660002431798
+  }
+ }
+}

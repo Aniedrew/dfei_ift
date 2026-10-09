@@ -1,0 +1,117 @@
+{
+ "config": {
+  "npz": "report_figs/feat_ceiling_nb.npz",
+  "epochs": 60,
+  "seed": 0,
+  "slots": 6,
+  "assign": "hungarian",
+  "min_nb": 1,
+  "max_nb": 1,
+  "d": 64,
+  "heads": 4,
+  "edge_bias": true,
+  "match_tau": 0.5,
+  "match_iters": 10,
+  "dust_logit": -1.0,
+  "scipy": true
+ },
+ "n_events": {
+  "train": 1045,
+  "val": 348,
+  "test": 349
+ },
+ "setpred": {
+  "1": {
+   "n_gt": 359,
+   "finding_eff": 0.8997214484679665,
+   "fake_rate": 0.03869047619047619,
+   "perfect_rate": 0.7261904761904762,
+   "n_pred": 336,
+   "n_found": 323,
+   "n_fake": 13,
+   "n_perfect": 244
+  },
+  "2": {
+   "n_gt": 0,
+   "finding_eff": NaN,
+   "fake_rate": NaN,
+   "perfect_rate": NaN,
+   "n_pred": 0,
+   "n_found": 0,
+   "n_fake": 0,
+   "n_perfect": 0
+  },
+  ">=3": {
+   "n_gt": 0,
+   "finding_eff": NaN,
+   "fake_rate": NaN,
+   "perfect_rate": NaN,
+   "n_pred": 0,
+   "n_found": 0,
+   "n_fake": 0,
+   "n_perfect": 0
+  },
+  "ALL": {
+   "n_gt": 359,
+   "finding_eff": 0.8997214484679665,
+   "fake_rate": 0.03869047619047619,
+   "perfect_rate": 0.7261904761904762,
+   "n_pred": 336,
+   "n_found": 323,
+   "n_fake": 13,
+   "n_perfect": 244
+  }
+ },
+ "baseline_cc": {
+  "1": {
+   "n_gt": 359,
+   "finding_eff": 0.8662952646239555,
+   "fake_rate": 0.05757575757575758,
+   "perfect_rate": 0.6666666666666666,
+   "n_pred": 330,
+   "n_found": 311,
+   "n_fake": 19,
+   "n_perfect": 220
+  },
+  "2": {
+   "n_gt": 0,
+   "finding_eff": NaN,
+   "fake_rate": NaN,
+   "perfect_rate": NaN,
+   "n_pred": 0,
+   "n_found": 0,
+   "n_fake": 0,
+   "n_perfect": 0
+  },
+  ">=3": {
+   "n_gt": 0,
+   "finding_eff": NaN,
+   "fake_rate": NaN,
+   "perfect_rate": NaN,
+   "n_pred": 0,
+   "n_found": 0,
+   "n_fake": 0,
+   "n_perfect": 0
+  },
+  "ALL": {
+   "n_gt": 359,
+   "finding_eff": 0.8662952646239555,
+   "fake_rate": 0.05757575757575758,
+   "perfect_rate": 0.6666666666666666,
+   "n_pred": 330,
+   "n_found": 311,
+   "n_fake": 19,
+   "n_perfect": 220
+  }
+ },
+ "edge_level": {
+  "setpred": {
+   "auc": 0.8159506940078348,
+   "ap": 0.9039454740736603
+  },
+  "baseline": {
+   "auc": 0.7163690332253229,
+   "ap": 0.8251871774741477
+  }
+ }
+}
