@@ -288,6 +288,24 @@ VARIANTS = {
                                      validate_prune_metric=True,
                                      validate_prune_events=1000,
                                      early_stop_min_delta=0.005)),
+    # ---- v653 (A2 上主模型) = v648 + 最弱环链级存活损失 (chain_weakest_w=1.0) ----
+    # 依据 (2026-10-09): 纯 CPU 小探针上首次出现**大而稳**的多 B 增益 —— "链存活@边精度90%"
+    #   24.2% -> 32.6% (3/3 种子全为正, 平均 +8.4pp), 且边级 AP/AUC 同时变好 (0.8393->0.8533 /
+    #   0.8650->0.8732)。关键对照: 换成"乘积/几何平均"形式 (≈逐边 BCE) 只有 28.0% ->
+    #   **有效的是罚"链内最弱环"的非线性形式, 而不是"换成乘积"**。
+    # 物理动机: 判据是"整条真值链每个环节都要对"(AND, 一失毁全链), 而训练一直是逐边 BCE。
+    # 单变量: 与 v648 只差 chain_weakest_w (默认 0.0 = 逐位无影响, 已验证)。
+    "v653": dict(epochs=60, early_stop_patience=20, tag="v653_geo_comp_weakest", dz_dict=True,
+                 derived_prune=True, derived_triangle=True,
+                 derived_vertex_geom=True, derived_comp=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=18),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 chain_weakest_w=1.0, chain_weakest_gamma=10.0,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
     "v647": dict(epochs=60, early_stop_patience=20, tag="v647_vgeom_pairsym", dz_dict=True,
                  derived_prune=True, derived_triangle=True,
                  derived_vertex_geom=True, derived_pair_sym=True, chain_lca_filter=True,
@@ -389,6 +407,9 @@ def main():
                        ("event_count_weight", "event_count_weight"),
                        ("chain_contrastive_weight", "chain_contrastive_weight"),
                        ("chain_contrastive_tau", "chain_contrastive_tau"),
+                       # [2026-10-09] A2: 最弱环链级存活损失 (softmin over 链内各环)
+                       ("chain_weakest_w", "chain_weakest_w"),
+                       ("chain_weakest_gamma", "chain_weakest_gamma"),
                        # [2026-09-26] 层3 新键: listwise 排序模式 / 次级顶点一致性特征
                        ("edge_rank_mode", "edge_rank_mode"),
                        ("derived_vertex", "derived_vertex"),

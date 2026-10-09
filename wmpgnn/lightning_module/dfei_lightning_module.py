@@ -807,6 +807,21 @@ class DFEILightningModule(L.LightningModule):
         self.chain_recall_thr = float(self.configs.get("chain_recall_thr", 0.5))
         self.chain_recall_tau = float(self.configs.get("chain_recall_tau", 0.1))
 
+        # ==== [2026-10-09] "最弱环"链级存活损失 (chain_weakest) ====
+        # 物理判据: 整条真值链必须**每个环节都对** (AND 语义, 一失毁全链), 而训练一直只做逐边
+        #   BCE (优化的是平均正确率, 与"整链存活"不一致)。纯 CPU 小探针实证 (analyze_vertex_assoc.py
+        #   --chain_loss_w/--chain_pool softmin): 多 B 子集"链存活@边精度90%" 24.2% -> 32.6%
+        #   (3/3 种子为正, 均值 +8.4pp); 关键对照——换成乘积/几何平均形式 (≈逐边 BCE) 只有 28.0%
+        #   -> 有效的不是"换成乘积", 而是罚链内**最弱环**的这种非线性 (softmin_γ) 形式; 同时边级
+        #   AP/AUC 也变好 (0.8393->0.8533 / 0.8650->0.8732), 并非此消彼长。
+        # 本项把该形式搬到主模型: 对每条真值链用 softmin_γ 聚合链内 tt 边存活概率, 罚最弱环节。
+        # 缺省 w=0 -> 整段不执行, 与旧行为逐位一致 (见 shared_step 中同名实现)。
+        self.chain_weakest_w = float(self.configs.get("chain_weakest_w", 0.0))
+        self.chain_weakest_gamma = float(self.configs.get("chain_weakest_gamma", 10.0))
+        if self.chain_weakest_w > 0:
+            print(f"[chain_weakest] 最弱环链级存活损失启用: w={self.chain_weakest_w} "
+                  f"gamma={self.chain_weakest_gamma}", flush=True)
+
         self.trn_log, self.val_log = init_logs(configs)
         self.tst_log = init_logs(configs, mode="test")
         # init event reconstruction class
@@ -1516,6 +1531,51 @@ class DFEILightningModule(L.LightningModule):
             if _cr_edge is not None:
                 combined_loss = combined_loss + self.chain_recall_edge_w * _cr_edge
                 log["chain_recall_edge_loss"].append(_cr_edge.item())
+        # ==== [2026-10-09] "最弱环"链级存活损失 (chain_weakest) ====
+        # 见 __init__ 同名说明。物理判据 = "整条真值链每个环节都对" (AND 语义, 一失毁全链),
+        # 与逐边 BCE 的"平均正确率"目标不一致。这里对每条真值链用 softmin_γ 聚合链内 tt 边
+        # **存活概率** (γ 越大越接近 min), 罚链内最弱的一环:
+        #     surv_c = -log( mean_{e in c} exp(-γ p_e) ) / γ
+        #     L      = -log( surv_c.clamp_min(1e-6) ).mean()   (对链取平均)
+        # 事件隔离: 用 (事件 id, 节点链 id) 拼成唯一键, 绝不让不同事件的径迹进同一条链。
+        # 缺省 chain_weakest_w=0 -> 整段不执行, 与旧行为逐位一致。
+        if mode == "train" and self.chain_weakest_w > 0:
+            try:
+                # 注: truth_chain_labels 是本文件**模块级**的现成函数 (见文件顶部), 直接调用即可;
+                #     topk_selection 里只有 truth_chain_roots / truth_chain_structure, 没有它。
+                _tt = batch[('tracks', 'to', 'tracks')]
+                # tt 边剪枝 logits: 与 edge_prune 的 BCE 用的是**同一个**输出 (逐边一个标量 logit);
+                # 来源见 hetero_graph_network: edge_logits[et] = _edge_mlps[et](node_input[et].edges, ...)
+                # -> 行序严格对应 batch[('tracks','to','tracks')].edge_index (与 y_edges 同序)。
+                _cw_logits = self.model._blocks[-1].edge_logits[
+                    ('tracks', 'to', 'tracks')].reshape(-1)
+                _n_nodes = batch['tracks'].x.shape[0]
+                # 每个节点/径迹的真值链 id (-1 = 背景)
+                _lab = truth_chain_labels(_tt.y, _tt.edge_index, _n_nodes)
+                _ea, _eb = _tt.edge_index[0].long(), _tt.edge_index[1].long()
+                _ev = (batch['tracks'].batch if 'batch' in batch['tracks']
+                       else torch.zeros(_n_nodes, dtype=torch.long, device=_lab.device))
+                # 只计"两端属于同一非负链 id"的边
+                _same = (_lab[_ea] >= 0) & (_lab[_ea] == _lab[_eb])
+                if bool(_same.any()):
+                    # 事件隔离: 唯一键 = 事件 id * n_nodes + 链 id (链 id < n_nodes, 跨事件必不碰撞)
+                    _key = _ev[_ea[_same]] * _n_nodes + _lab[_ea[_same]]
+                    _uniq, _inv = torch.unique(_key, return_inverse=True)
+                    _p = torch.sigmoid(_cw_logits[_same]).clamp(1e-6, 1.0 - 1e-6)   # p_e
+                    _wgt = torch.exp(-self.chain_weakest_gamma * _p)                 # exp(-γ p_e)
+                    _sum = torch.zeros(_uniq.numel(), device=_p.device, dtype=_p.dtype
+                                       ).scatter_add_(0, _inv.reshape(-1), _wgt)
+                    _cnt = torch.zeros(_uniq.numel(), device=_p.device, dtype=_p.dtype
+                                       ).scatter_add_(0, _inv.reshape(-1), torch.ones_like(_wgt))
+                    _mean = _sum / _cnt.clamp_min(1.0)
+                    _surv = -torch.log(_mean.clamp_min(1e-12)) / self.chain_weakest_gamma
+                    # 只登记**未乘权重**的原始值 (权重在下方组合处统一乘, 避免重复计权)
+                    loss["chain_weakest"] = -torch.log(_surv.clamp_min(1e-6)).mean()
+                    # 落日志 (chain_weakest_loss 未在 init_logs 预置 -> 用 setdefault;
+                    #  epoch_end_loggable 按 *_loss 后缀汇总 -> 会出 train_chain_weakest_loss)
+                    log.setdefault("chain_weakest_loss", []).append(float(loss["chain_weakest"]))
+            except Exception as e:
+                print(f"[chain_weakest] WARN: {type(e).__name__}: {e}")
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:
@@ -1535,6 +1595,9 @@ class DFEILightningModule(L.LightningModule):
             combined_loss = combined_loss + self.evt_count_w * loss["evt_count"]
         if self.chain_contrast_w > 0 and "chain_contrast" in loss:
             combined_loss = combined_loss + self.chain_contrast_w * loss["chain_contrast"]
+        # [2026-10-09] 最弱环链级存活损失 (chain_weakest): 原始值在 loss dict 中, 此处统一乘权重
+        if self.chain_weakest_w > 0 and "chain_weakest" in loss:
+            combined_loss = combined_loss + self.chain_weakest_w * loss["chain_weakest"]
 
         # 极端防御: 组合 loss 仍非有限或异常巨大时, 置为 0 损失, 避免梯度爆炸污染训练
         if not torch.isfinite(combined_loss) or combined_loss > 1e5:
