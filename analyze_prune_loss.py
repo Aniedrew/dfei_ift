@@ -8,6 +8,7 @@
 import argparse
 import os
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -73,6 +74,29 @@ def auc(score, label):
     o = np.argsort(score); r = np.empty(len(o), float); r[o] = np.arange(1, len(o) + 1)
     p = int(label.sum()); n = len(label) - p
     return (r[label == 1].sum() - p * (p + 1) / 2) / (p * n) if p and n else np.nan
+
+
+def _append_csv(df, path):
+    """[2026-10-09 FIX D6] 安全追加 CSV。
+
+    原实现直接 `to_csv(mode="a", header=not exists(path))`。一旦后续开发**新增了列**
+    (本项目的 bench 表就是这样演进的), 追加行会比表头多出几列 -> 整张表按列名不可读
+    (实测 bench_multib.csv 表头 9 列、行 17 列), 任何按列名/位置的读取都会**静默取到错列**
+    (我就因此把 p_r90_base1 误当成 chain_surv, 差点误判一个不存在的 bug)。
+    做法: 追加前比对表头; 不一致就把旧表转存成带时间戳的 *_old_*.csv, 再以新表头重开。
+    """
+    cols = list(df.columns)
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                old = f.readline().strip().split(",")
+        except Exception:                                       # noqa: BLE001
+            old = []
+        if old and old != cols:
+            bak = f"{path[:-4]}_old_{int(time.time())}.csv"
+            os.replace(path, bak)
+            print(f"[csv] {path} 表头不一致 (旧 {len(old)} 列 vs 新 {len(cols)} 列) -> 旧表转存 {bak}")
+    df.to_csv(path, mode="a", header=not os.path.exists(path), index=False)
 
 
 def main():
@@ -510,7 +534,7 @@ def main():
                       f"P>0={r.get('gain_p_pos', np.nan):>4.2f} | {r.get('chain_surv', np.nan):>7.1f}")
             _mp = "report_figs/bench_multib.csv"
             os.makedirs("report_figs", exist_ok=True)
-            mbd.to_csv(_mp, mode="a", header=not os.path.exists(_mp), index=False)
+            _append_csv(mbd, _mp)
             print(f"  [已追加] {_mp}")
 
     # ---- 链层: AND 语义 (按链长分箱 + min 分数 + 反解单环节存活率) ----
@@ -590,7 +614,7 @@ def main():
     for _k, _v in {**res, **chs, **pvs}.items():
         row[_k] = round(float(_v), 4) if isinstance(_v, (float, np.floating)) else _v
     bf = f"{a.out}/{a.csv_name}"
-    pd.DataFrame([row]).to_csv(bf, mode="a", header=not os.path.exists(bf), index=False)
+    _append_csv(pd.DataFrame([row]), bf)
     print(f"\n[benchmark] 汇总行已追加 -> {bf}")
 
     print("\n--- 剪枝效率 vs 物理量 (存活率 %, 括号内为该箱链数) ---")
