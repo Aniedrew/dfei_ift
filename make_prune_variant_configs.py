@@ -306,6 +306,40 @@ VARIANTS = {
                                      validate_prune_metric=True,
                                      validate_prune_events=1000,
                                      early_stop_min_delta=0.005)),
+    # ==== 2026-10-09 重做链级损失臂 (依据 500 事件 bench 的物理判据) ====
+    # 依据: 500 事件表里**链存活与难池 AP 排序几乎无关**; v641/v642 (v633 + chain_recall)
+    #   难池 AP 只在中游 (0.6389/0.6380, 8-9th), 但**链存活 59.2%/61.6%, 比 AP 冠军 v623 的 47.1%
+    #   高 14pp**, 且 per_link_p_2 (2 环节链的单环节存活率) 0.80 vs v623 0.71 / v633 0.67 / v637 0.65。
+    #   => 之前的结论"链级损失有害"是判据问题 (200 事件 + 只看 AP), 不是机制问题。
+    # 因此把 chain_recall 搬到**当前最优底子 v648** 上重做 (v641/v642 只差早停参数, 且 v641 的
+    #   validate_prune_events=200 是已知 bug, 故只取一份公平设置)。与已在跑的 v653
+    #   (v648 + 最弱环 softmin 链级损失) 构成"同一想法的两种写法"对照。
+    # ---- v654 = v648 + chain_recall (v642 的原参数: w=5/5, thr=0.9, tau=0.1) ----
+    "v654": dict(epochs=60, early_stop_patience=20, tag="v654_geo_comp_chainrecall", dz_dict=True,
+                 derived_prune=True, derived_triangle=True,
+                 derived_vertex_geom=True, derived_comp=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=18),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 chain_recall_weight=5.0, chain_recall_edge_weight=5.0,
+                 chain_recall_thr=0.9, chain_recall_tau=0.1,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
+    # ---- v655 = v648 + chain_recall (权重加强 5->15): 物理判据是"链存活", 想确认权重是否是限制项 ----
+    "v655": dict(epochs=60, early_stop_patience=20, tag="v655_geo_comp_chainrecall_w15", dz_dict=True,
+                 derived_prune=True, derived_triangle=True,
+                 derived_vertex_geom=True, derived_comp=True, chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=18),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 chain_recall_weight=15.0, chain_recall_edge_weight=15.0,
+                 chain_recall_thr=0.9, chain_recall_tau=0.1,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
     "v647": dict(epochs=60, early_stop_patience=20, tag="v647_vgeom_pairsym", dz_dict=True,
                  derived_prune=True, derived_triangle=True,
                  derived_vertex_geom=True, derived_pair_sym=True, chain_lca_filter=True,
