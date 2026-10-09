@@ -269,6 +269,25 @@ VARIANTS = {
                                      validate_prune_metric=True,
                                      validate_prune_events=1000,
                                      early_stop_min_delta=0.005)),
+    # ---- v652 (A4a) = v648 + derived_vertex (次级顶点一致性 z_assoc/zcpa/flight/collin, +3 维 -> 21) ----
+    # 依据 (2026-10-09): 修掉分析脚本的 D1 索引错位后, **多 B 子集**的 GBDT 探针里
+    #   `flight` 排第 3 (+0.0476, 仅次于 doca +0.1663 / trdist +0.0727) ->
+    #   值得在"当前最优底子"上把这条分支重新验证一次。
+    # 背景/风险: 早期 200 事件的混合池里 derived_vertex 贡献≈0 (v636 难池 AP 0.6423 < v633 0.6647),
+    #   当时的解释是它给的是比值量 d_perp/(|Δz|+1), 绝对量级被除掉; 但 v643 的绝对量版本
+    #   (derived_vertex_geom) 在 500 事件上也是 +0.000。所以本臂是**在多 B 判据下**的复检,
+    #   而不是"新发现"。单变量: 与 v648 只差 derived_vertex。
+    "v652": dict(epochs=60, early_stop_patience=20, tag="v652_geo_comp_vertex", dz_dict=True,
+                 derived_prune=True, derived_triangle=True,
+                 derived_vertex_geom=True, derived_comp=True, derived_vertex=True,
+                 chain_lca_filter=True,
+                 edge_dz_ip_canon=True, edge_rank_weight=10.0, edge_rank_nneg=64,
+                 gn=dict(event_bias=True, extra_node_dim=7, extra_edge_dim=21),
+                 chain_contrastive_weight=0.5, thr=0.95,
+                 settings_extra=dict(monitor_metric="val_prune_ap",
+                                     validate_prune_metric=True,
+                                     validate_prune_events=1000,
+                                     early_stop_min_delta=0.005)),
     "v647": dict(epochs=60, early_stop_patience=20, tag="v647_vgeom_pairsym", dz_dict=True,
                  derived_prune=True, derived_triangle=True,
                  derived_vertex_geom=True, derived_pair_sym=True, chain_lca_filter=True,
