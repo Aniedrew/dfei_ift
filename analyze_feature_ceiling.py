@@ -68,7 +68,7 @@ def collect(a):
     # [2026-10-03] 额外导出"每条边两端径迹的事件内局部 id"(t0/t1)与事件径迹数(ntr):
     #   这是**全局匹配(Sinkhorn/匈牙利)**与 **track-token 注意力** 的前提 —— 没有端点身份,
     #   就无法构建"同事件径迹 x 径迹"的稠密矩阵, 也无法把 token 从"边"换成"径迹"。
-    rows = {k: [] for k in ("X", "y", "grp", "t0", "t1", "ntr")}
+    rows = {k: [] for k in ("X", "y", "grp", "t0", "t1", "ntr", "nb")}
     n_evt = 0
     for batch in ckl.test_dataloader():
         # 原始 tt 边特征 (模型的输入; 注意不能在模型前向之后取, 会被覆盖)
@@ -102,11 +102,13 @@ def collect(a):
             pk = g["tracks"].part_keys.numpy().tolist()
             pk2i = {int(k): i for i, k in enumerate(pk)}
             cl_id = np.full(len(pk), -1, dtype=int)
+            n_chain = 0      # [2026-10-08] 该事件真值链数 (= b 强子数代理), 用于"多 B 专用探针"
             for ci, (ck, cl) in enumerate(tc.items()):
                 nodes = [pk2i[int(k)] for k in cl["node_keys"] if int(k) in pk2i]
                 if len(nodes) < 2:
                     continue
                 cl_id[nodes] = ci
+                n_chain += 1
             gt = tm.nonzero()[:, 0].numpy()
             g2l = {int(x): i for i, x in enumerate(gt)}
             ei_g = ei[:, em].numpy()
@@ -181,6 +183,7 @@ def collect(a):
             rows["t0"].append(loc[0][kk].astype(np.int32))      # 起点径迹的事件内局部 id
             rows["t1"].append(loc[1][kk].astype(np.int32))      # 终点径迹的事件内局部 id
             rows["ntr"].append(np.full(len(kk), int(len(gt)), dtype=np.int32))   # 该事件径迹数
+            rows["nb"].append(np.full(len(kk), int(n_chain), dtype=np.int32))    # [2026-10-08] 真值链数
         if n_evt >= a.events:
             break
 
@@ -191,11 +194,12 @@ def collect(a):
              + GEO_NAMES + CTX_NAMES)
     assert X.shape[1] == len(names), (X.shape, len(names))
     t0 = np.concatenate(rows["t0"]); t1 = np.concatenate(rows["t1"]); ntr = np.concatenate(rows["ntr"])
+    nb = np.concatenate(rows["nb"])
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     np.savez_compressed(a.out, X=X, y=y, grp=grp, names=np.array(names),
-                        t0=t0, t1=t1, ntr=ntr)
+                        t0=t0, t1=t1, ntr=ntr, nb=nb)
     print(f"[feat] 写出 {a.out}: X={X.shape} 真边={int(y.sum())} 难负例={int((1-y).sum())} "
-          f"事件={len(np.unique(grp))}")
+          f"事件={len(np.unique(grp))} (多B事件={int((np.unique(nb)>1).sum())})")
 
 
 def main():

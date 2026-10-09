@@ -55,6 +55,102 @@ CUMULATIVE = [
 ]
 
 
+def _multib_mask(npz, grp, min_nb, max_nb=10 ** 9):
+    """[2026-10-08] 多 B 专用子集: 返回"真值链数在 [min_nb, max_nb]"的**边掩码**。
+
+    动机: DFEI 的目标场景是"一个事件里有多条 B", 但这类事件在总表里只占少数 (~30%),
+    容易被大量单 B 事件淹没 -> 在同一多 B 子集上比较不同优化, 才能看出**哪个对多 B 最有效**。
+    多 B = min_nb>=2; 单 B 对照 = min_nb=1 且 max_nb=1。min_nb<=1 且 max_nb 无限时不做限制。
+    """
+    if min_nb <= 1 and max_nb >= 10 ** 8:
+        return np.ones(len(grp), dtype=bool), None
+    d = np.load(npz, allow_pickle=True)
+    if "nb" not in d:
+        raise SystemExit("npz 缺 nb (每事件真值链数): 请用更新后的 analyze_feature_ceiling.py 重新导出")
+    nbe = {int(e): int(v) for e, v in zip(d["grp"], d["nb"])}
+    ke = {e for e, v in nbe.items() if min_nb <= v <= max_nb}
+    return np.isin(grp, list(ke)), (len(ke), len(nbe))
+
+
+def _thr_at_precision(s, y, target=0.90):
+    """[2026-10-09 A2] 使**边精度 >= target** 且召回最大的分数阈值 (分数越大越像真边)。"""
+    s = np.asarray(s, float)
+    order = np.argsort(-s)
+    ys = np.asarray(y, int)[order]
+    prec = np.cumsum(ys) / np.arange(1, len(ys) + 1)
+    ok = np.nonzero(prec >= target)[0]
+    if len(ok) == 0:
+        return float("inf")
+    return float(s[order][ok[-1]])
+
+
+def _chain_ids_batch(yb, ib0, ib1, ntb, mb):
+    """[2026-10-09 A2] 从 batch 张量算**真值链**分组。
+
+    真值链定义: 该事件内 y==1 的边构成子图的连通分量 (与 bench / setpred 原型一致)。
+    ib0/ib1 已逐事件重映射到 0..ntb-1, 所以**每个事件必须独立做并查集**。
+    返回 (cid, nchain): cid 形状 (B,T), -1 表示该边不属于任何真链 (或 padding)。
+    """
+    B, T = mb.shape
+    cid = np.full((B, T), -1, dtype=np.int64)
+    nch = 0
+    for bi in range(B):
+        n = max(int(ntb[bi]), 1)
+        par = list(range(n))
+
+        def find(x):
+            while par[x] != x:
+                par[x] = par[par[x]]
+                x = par[x]
+            return x
+
+        idx = np.nonzero(mb[bi])[0]
+        for k in idx:
+            if yb[bi, k] > 0.5:
+                ra, rb = find(int(ib0[bi, k])), find(int(ib1[bi, k]))
+                if ra != rb:
+                    par[ra] = rb
+        seen = {}
+        for k in idx:
+            if yb[bi, k] > 0.5:
+                r = find(int(ib0[bi, k]))
+                if r not in seen:
+                    seen[r] = nch
+                    nch += 1
+                cid[bi, k] = seen[r]
+    return cid, nch
+
+
+def _chain_loss(p, cid, nch, pool="softmin", gamma=10.0):
+    """[2026-10-09 A2] **链级存活**损失 (AND 语义的可微代理)。
+
+    动机: 物理判据是"整条链必须每个环节都对"(一失毁全链), 而训练一直是逐边 BCE。
+    - pool="prod"    : 存活 = ∏ p_e 的几何平均。**注意它≈逐边 BCE**(对数下就是平均),
+                       留作对照, 说明"只换成乘积形式"没有新信息。
+    - pool="softmin" : 存活 = softmin_γ(p) = -log(mean e^{-γ p})/γ, γ 越大越接近 min(p)。
+                       它把梯度集中到链里**最弱的那一环** -> 对"指数级链存活衰减"才是
+                       正确的代理。这才是本项要测的东西。
+    """
+    if nch <= 0:
+        return None
+    p = p.reshape(-1).clamp(1e-6, 1 - 1e-6)
+    flat = torch.as_tensor(cid.reshape(-1), device=p.device)
+    sel = flat >= 0
+    if not bool(sel.any()):
+        return None
+    c, pv = flat[sel], p[sel]
+    one = torch.ones_like(pv)
+    cnt = torch.zeros(nch, device=p.device).scatter_add_(0, c, one).clamp_min(1.0)
+    if pool == "prod":
+        s = torch.zeros(nch, device=p.device).scatter_add_(0, c, torch.log(pv))
+        surv = torch.exp(s / cnt)
+    else:
+        e = torch.exp(-gamma * pv)
+        m = torch.zeros(nch, device=p.device).scatter_add_(0, c, e)
+        surv = -torch.log((m / cnt).clamp_min(1e-9)) / gamma
+    return -torch.log(surv.clamp_min(1e-6)).mean()
+
+
 def load_npz(path, want_ids=False):
     d = np.load(path, allow_pickle=True)
     X, y, grp = d["X"], d["y"], d["grp"]
@@ -153,6 +249,11 @@ def cmd_probe(a):
     from sklearn.inspection import permutation_importance
 
     X, y, grp, names = load_npz(a.npz)
+    _m, _info = _multib_mask(a.npz, grp, a.min_nb, a.max_nb)
+    if _info is not None:
+        print(f"[probe] 子集 nb in [{a.min_nb},{a.max_nb}]: {int(_m.sum())}/{len(_m)} 条边, "
+              f"{_info[0]}/{_info[1]} 个事件 ({100*_info[0]/max(_info[1],1):.1f}%)")
+        X, y, grp = X[_m], y[_m], grp[_m]
     tr, va, te = split_events(grp, seed=a.seed)
     m_tr = np.isin(grp, tr); m_te = np.isin(grp, te)
     print(f"[probe] 样本 {X.shape} | 事件 train/val/test = {len(tr)}/{len(va)}/{len(te)} "
@@ -309,7 +410,7 @@ def cmd_train(a):
 
     if a.match != "none" and a.model != "attn":
         raise SystemExit("--match 需要 --model attn (Sinkhorn 按事件做, 只有 attn 路径有事件分批)")
-    need_ids = (a.match == "sinkhorn")
+    need_ids = (a.match == "sinkhorn") or (a.chain_loss_w > 0)
 
     # [2026-10-03] 之前 --seed 只控制"事件切分"与 batch 打乱, **没控制模型初始化/dropout** ->
     # 同一 seed 重跑结果也不同。这里统一固定 numpy/torch 种子, 保证可复现 (多种子对照的前提)。
@@ -321,6 +422,14 @@ def cmd_train(a):
         X, y, grp, names, T0, T1, NTR = load_npz(a.npz, want_ids=True)
     else:
         X, y, grp, names = load_npz(a.npz)
+    # [2026-10-08] 多 B 专用子集 (见 _multib_mask 说明)
+    _m, _info = _multib_mask(a.npz, grp, a.min_nb, a.max_nb)
+    if _info is not None:
+        print(f"[train] 子集 nb in [{a.min_nb},{a.max_nb}]: {int(_m.sum())}/{len(_m)} 条边, "
+              f"{_info[0]}/{_info[1]} 个事件 ({100*_info[0]/max(_info[1],1):.1f}%)")
+        X, y, grp = X[_m], y[_m], grp[_m]
+        if need_ids:
+            T0, T1, NTR = T0[_m], T1[_m], NTR[_m]
     y = y.astype(np.float32)          # npz 里 y 是 int8; BCE 要求与 logits 同 dtype
 
     gs = a.feats.split("+")
@@ -430,6 +539,7 @@ def cmd_train(a):
         """返回 dict: pairwise / match / comb 三种分数 + 标签"""
         bs = bs or a.bs
         S, SM, Y = [], [], []
+        CH = []      # [2026-10-09 A2] 每条真链的"最弱环"分数
         for xb, yb, mb, ib0, ib1, ntb in batches(mask, bs, False):
             xt = torch.as_tensor(xb, device=dev)
             lg = forward_scores(xt, None if mb is None else torch.as_tensor(mb, device=dev))
@@ -440,11 +550,22 @@ def cmd_train(a):
                 if need_ids:
                     sm = match_scores(lg, mb, ib0, ib1, ntb)
                     SM.append(sm[m].detach().cpu().numpy())
+                    _cb, _nch = _chain_ids_batch(yb, ib0, ib1, ntb, mb)
+                    if _nch:
+                        _lgn = lg.detach().cpu().numpy().reshape(-1)
+                        _cf = _cb.reshape(-1)
+                        _sel = _cf >= 0
+                        if _sel.any():
+                            _cm = np.full(_nch, np.inf)
+                            np.minimum.at(_cm, _cf[_sel], _lgn[_sel])
+                            CH.append(_cm)
             else:
                 S.append(lg.reshape(-1).detach().cpu().numpy())
                 Y.append(yb.reshape(-1))
         out = {"pairwise": np.concatenate(S), "y": np.concatenate(Y).astype(int)}
-        if SM:
+        if CH:
+            out["chain_min"] = np.concatenate(CH)
+        if SM and a.match != "none":      # 只在真开了 match 时才输出, 否则会误标成 "+Sinkhorn"
             out["match"] = np.concatenate(SM)
             out["comb"] = out["pairwise"] + out["match"]
         return out
@@ -465,6 +586,12 @@ def cmd_train(a):
                     loss = loss + a.match_w * lossf(sm[m], yt[m])
             else:
                 loss = lossf(lg, yt)
+            # [2026-10-09 A2] 链级存活损失 (对真链的"最弱环"施加额外惩罚)
+            if a.chain_loss_w > 0:
+                _cb, _nch = _chain_ids_batch(yb, ib0, ib1, ntb, mb)
+                _cl = _chain_loss(torch.sigmoid(lg), _cb, _nch, a.chain_pool, a.chain_gamma)
+                if _cl is not None:
+                    loss = loss + a.chain_loss_w * _cl
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -483,14 +610,21 @@ def cmd_train(a):
     net.load_state_dict(best_state)
     net.eval()
     r = collect(parts["te"])
+    # [2026-10-09 A2] 链级指标: 用"边精度 90%"的工作点看**整链存活**(AND 语义)
+    #   为什么必须补这个: 只报边级 AP 会漏掉"整链一失毁全链"的物理判据, 而 A2 的损失
+    #   正是针对它设计的; 没有链级指标就无法判断 A2 到底有没有用。
+    _cmsg = ""
+    if "chain_min" in r:
+        _thr = _thr_at_precision(r["pairwise"], r["y"], 0.90)
+        _cs = 100.0 * float(np.mean(r["chain_min"] > _thr))
+        _cmsg = f" | 链存活@边精度90%={_cs:.1f}% (阈={_thr:+.3f}, 真链数={len(r['chain_min'])})"
     msg = (f"[train] 测试集: pairwise AUC={auc(r['pairwise'], r['y']):.4f} AP={ap_score(r['pairwise'], r['y']):.4f} "
            f"p@r90={prec_at_recall(r['pairwise'], r['y'], 0.90):.4f}")
     if "match" in r:
-        msg += (f" || +Sinkhorn: AP={ap_score(r['match'], r['y']):.4f} "
-                f"p@r90={prec_at_recall(r['match'], r['y'], 0.90):.4f}"
+        msg += (f" || +Sinkhorn: AP={ap_score(r['match'], r['y']):.4f} "                f"p@r90={prec_at_recall(r['match'], r['y'], 0.90):.4f}"
                 f" || 相加: AP={ap_score(r['comb'], r['y']):.4f} "
                 f"p@r90={prec_at_recall(r['comb'], r['y'], 0.90):.4f}")
-    print(msg + f"   (真边率 {100*r['y'].mean():.1f}%, n={len(r['y'])})")
+    print(msg + _cmsg + f"   (真边率 {100*r['y'].mean():.1f}%, n={len(r['y'])})")
     if a.out:
         np.savez_compressed(a.out, pairwise=r["pairwise"], y=r["y"],
                             **({"match": r["match"], "comb": r["comb"]} if "match" in r else {}))
@@ -506,6 +640,11 @@ def main():
         p.add_argument("--npz", default="report_figs/feat_ceiling_ctx.npz")
         p.add_argument("--seed", type=int, default=0)
         p.add_argument("--out", default="")
+        # [2026-10-08] 多 B 专用: 只保留每事件真值链数 >= N 的事件 (DFEI 目标场景)
+        p.add_argument("--min_nb", type=int, default=0,
+                       help="只保留每事件真值链数 >= N 的事件 (多 B 用 2; 0/1 = 不设下界)")
+        p.add_argument("--max_nb", type=int, default=10 ** 9,
+                       help="每事件真值链数上界 (单 B 对照用 --min_nb 1 --max_nb 1)")
     p2.add_argument("--model", default="mlp", choices=["mlp", "attn"])
     p2.add_argument("--attn_fn", default="softmax", choices=["softmax", "sparsemax", "topk"])
     p2.add_argument("--attn_topk", type=int, default=0)
@@ -516,6 +655,13 @@ def main():
     p2.add_argument("--match_iters", type=int, default=10)
     p2.add_argument("--match_dust", type=float, default=0.1)
     p2.add_argument("--match_w", type=float, default=0.5)
+    # [2026-10-09 A2] 链级存活损失: 物理判据是"整链每个环节都要对"(AND), 训练却是逐边 BCE
+    p2.add_argument("--chain_loss_w", type=float, default=0.0,
+                    help="链级存活损失权重 (0=关; 需要事件内 t0/t1, 会自动打开 ids 加载)")
+    p2.add_argument("--chain_pool", default="softmin", choices=["softmin", "prod"],
+                    help="softmin=集中罚链内最弱环(推荐); prod=几何平均(≈逐边 BCE 的对照)")
+    p2.add_argument("--chain_gamma", type=float, default=10.0,
+                    help="softmin 的温度: 越大越接近 min(p)")
     p2.add_argument("--feats", default="node+geo+ctx")
     p2.add_argument("--hidden", type=int, default=256)
     p2.add_argument("--heads", type=int, default=4)
