@@ -1,0 +1,2 @@
+evt,n_daughters,sum_pt,chain_pt,chain_abs_eta,npvs,n_chains_in_evt,multi_b,n_true_edges,node_surv,edge_surv,chain_min_score,surv
+2,3,6185.66748046875,6166.30517578125,3.517759323120117,3,1,0,6,0,1,0.6946009397506714,0
