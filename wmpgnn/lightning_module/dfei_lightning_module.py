@@ -983,6 +983,35 @@ class DFEILightningModule(L.LightningModule):
                   f"excl_w={self.part_excl_w} (tau={self.part_excl_tau}) f1_w={self.part_f1_w}",
                   flush=True)
 
+        # ==== [2026-10-13] 方向4: 几何候选生成 (用物理量而非分类器决定候选集) ====
+        # 动机: 现在 recall 由学出来的边二分类头决定, 漏一条真值边整条链报废 (AND 语义), 给不出
+        #   召回保证; 且下游要在 O(N^2) 的候选里学占比极低的真值边。本方向把"生成候选"从学习里
+        #   剥离: 用**不学习**的纯几何量 (dR / DOCA / |Δ起点|, 均由 derive_pruning_features 现算,
+        #   绕开上游 log_DOCA_reco 的 bug) 定义"候选窗口" -> 召回由物理保证, 学习只在干净子集上
+        #   打分 (传统径迹跟踪的做法)。
+        # 两个**相互独立**的开关 (缺省 False -> 整段不执行, 与旧行为逐位一致):
+        #   geomcand_train_mask: 训练时把边剪枝/LCAG 的**损失统计**限制在几何候选集内 —— 逐边 BCE /
+        #       edge_rank / chain_recall / chain_weakest / part_* 各项只在候选边上算, 非候选边不进
+        #       损失。目的: 让模型在干净子集上学, 不被 O(N^2) 的噪声淹没。窗口外真值边会**显式
+        #       打印"被窗口漏掉的真值边比例"**, 供监控召回损失。
+        #   geomcand_gate: 推理(test)时把几何候选作为**乘性门**接到学习分数上 —— 非候选边分数置 0
+        #       (等效 -inf 偏置, 不可能被选中), 窗口内仍由学习分数决定 -> "召回由几何保证、精度由
+        #       学习决定" 这一分工在推理时真正成立。
+        # 窗口参数 (阈值来自离线标定 analyze_geomcand_windows.py -> report_figs/geomcand_study.json):
+        #   geomcand_max_r (dR, rad) / geomcand_max_doca (mm) / geomcand_max_dz (|Δ起点|, mm)。
+        self.geomcand_train_mask = bool(self.configs.get("geomcand_train_mask", False))
+        self.geomcand_gate = bool(self.configs.get("geomcand_gate", False))
+        self.geomcand_max_r = float(self.configs.get("geomcand_max_r", 0.3))
+        self.geomcand_max_doca = float(self.configs.get("geomcand_max_doca", 5.0))
+        self.geomcand_max_dz = float(self.configs.get("geomcand_max_dz", 200.0))
+        self._geomcand_keep = None      # 本次 forward 的几何窗口掩码 (float [E], 1=保留), 逐次重置
+        self._geomcand_logged = 0       # 漏掉真值边比例的打印节流计数
+        if self.geomcand_train_mask or self.geomcand_gate:
+            print(f"[geomcand] 几何候选启用: train_mask={self.geomcand_train_mask} "
+                  f"gate={self.geomcand_gate} | window dR<={self.geomcand_max_r}rad "
+                  f"DOCA<={self.geomcand_max_doca}mm |Δstart|<={self.geomcand_max_dz}mm", flush=True)
+
+
         self.trn_log, self.val_log = init_logs(configs)
         self.tst_log = init_logs(configs, mode="test")
         # init event reconstruction class
@@ -1337,8 +1366,29 @@ class DFEILightningModule(L.LightningModule):
             pass
         return sub
 
+    def _geomcand_keep_mask(self, batch):
+        """[2026-10-13 方向4] 纯几何候选窗口掩码 (float [E], 1=窗口内/保留)。
+
+        复用 derive_pruning_features 现算的几何量 (不重写公式, 绕开上游 log_DOCA_reco bug):
+        只用 use_vertex_geom=True 时, 边派生列 [0]=dR(rad), [7]=doca/100, [9]=|Δ起点|/100
+        -> doca(mm)=col7*100, |Δ起点|(mm)=col9*100。三者均为逐边局部量 (只依赖该边两端径迹),
+        天然按事件隔离 (tt 边两端必同事件), 不会跨事件; 且都是端点交换不变的对称量。
+        边界/NaN: 比较用 <= (含边界); derive_pruning_features 已对几何量做 nan_to_num
+        (NaN/inf -> 0), 不会因 NaN 误排除候选边。
+        """
+        _, _ed = derive_pruning_features(batch, self._nc, self._ns, use_vertex_geom=True)
+        _dr = _ed[:, 0]
+        _doca = _ed[:, 7] * 100.0
+        _dstart = _ed[:, 9] * 100.0
+        keep = ((_dr <= self.geomcand_max_r)
+                & (_doca <= self.geomcand_max_doca)
+                & (_dstart <= self.geomcand_max_dz))
+        return keep.to(torch.float32)
+
     def shared_step(self, batch, batch_idx, log, mode="train"):
         loss = init_loss(self.device)
+        self._geomcand_keep = None      # [方向4] 每次重置几何窗口掩码
+
 
         # ==== 方案7b (v40/v41): 可训练 PV 分簇头 ====
         # cluster 头吃原始特征 (pid concat / GNN 前), 训练与推理同一头同一特征 -> 严格对齐。
@@ -1454,14 +1504,55 @@ class DFEILightningModule(L.LightningModule):
         # 为 encoder 表征, mass head 的物理真值 (ππ 不变质量) 需在覆盖前取出。
         orig_tracks_p = batch['tracks'].x[:, :3].clone()
 
+        # ==== [2026-10-13] 方向4: 几何候选窗口掩码 (缺省两开关全 False -> 整段不执行) ====
+        # _gm: 训练阶段用于屏蔽损失统计的布尔掩码 (True=窗口内保留); None=不屏蔽, 逐位无影响。
+        _gm = None
+        _want_train = (self.geomcand_train_mask and mode == "train")
+        _want_infer = (self.geomcand_gate and mode == "test")
+        if _want_train or _want_infer:
+            try:
+                _gk = self._geomcand_keep_mask(batch)          # float [E], 1=窗口内
+            except Exception as _e:
+                # 与 derived_prune 同策略: 训练时不许静默降级; 推理侧可容忍 (退化为不屏蔽)。
+                if mode == "train":
+                    raise
+                print(f"[geomcand] WARN: {type(_e).__name__}: {_e}", flush=True)
+                _gk = None
+            if _gk is not None:
+                self._geomcand_keep = _gk                      # 供推理阶段 (test) 门控覆盖边权
+                if _want_train:
+                    _gm = _gk > 0.5
+                    # [监控] 被窗口漏掉的真值边比例 (几何窗口的召回损失) —— 节流打印 + 累积进 trn_log
+                    try:
+                        _yb = batch[('tracks', 'to', 'tracks')].y.reshape(-1) > 0
+                        _nt = int(_yb.sum())
+                        if _nt > 0:
+                            _nk = int((_yb & _gm).sum())
+                            _missed = 1.0 - _nk / _nt
+                            log.setdefault("geomcand_true_missed_frac", []).append(_missed)
+                            self._geomcand_logged += 1
+                            if self._geomcand_logged % 20 == 1:
+                                print(f"[geomcand] 被窗口漏掉的真值边比例 = {_missed:.4f} "
+                                      f"(真值边 {_nt}, 候选内 {_nk})", flush=True)
+                    except Exception as _e:
+                        print(f"[geomcand] WARN(missed): {type(_e).__name__}: {_e}", flush=True)
+
         outputs = self.model(batch)
         # 将原始物理边特征挂到模型输出上 (model 会覆盖 edges 为 LCA 输出, 物理特征需保留)
         outputs[('tracks', 'to', 'tracks')].phys_edges = orig_tt_edges
         if self.configs["LCA"]:
             y_LCA = batch[('tracks', 'to', 'tracks')].y.to(torch.int64)
             outputs[('tracks', 'to', 'tracks')].lca = outputs[('tracks', 'to', 'tracks')].edges
-            loss["LCA"] = self.lca_criterion(outputs[('tracks', 'to', 'tracks')].lca, y_LCA)
+            # [方向4] geomcand_train_mask: LCAG (4 类 LCA) 的损失统计同样限制在几何候选集内
+            # (非候选边不进损失); _gm=None (默认/推理) 时 _lca_in/_ylca_in 即原张量 -> 逐位一致。
+            _lca_in = outputs[('tracks', 'to', 'tracks')].lca
+            _ylca_in = y_LCA
+            if _gm is not None:
+                _lca_in = _lca_in[_gm]
+                _ylca_in = y_LCA[_gm]
+            loss["LCA"] = self.lca_criterion(_lca_in, _ylca_in)
             log["LCA_loss"].append(loss["LCA"].item())
+            # 准确率仍按**全部**边统计 (保持与各臂/历史可比; 掩码只作用于损失)
             acc_LCA = acc_four_class(outputs[('tracks', 'to', 'tracks')].lca, y_LCA)
             for key, values in acc_LCA.items():
                 log[key].append(values)
@@ -1492,12 +1583,16 @@ class DFEILightningModule(L.LightningModule):
 
             if self.configs["edge_prune"]:
                 _e_logits = block.edge_logits[('tracks', 'to', 'tracks')]
+                # ==== [方向4] 几何窗口屏蔽 (训练): 窗口外的边不进逐边 BCE 与 ranking ====
+                # _gm=None (默认/推理) 时 _e_logits_m/_ye_m 即原张量 -> 与旧行为逐位一致。
+                _e_logits_m = _e_logits if _gm is None else _e_logits[_gm]
+                _ye_m = y_edges if _gm is None else y_edges[_gm]
                 if self.edge_ohem_frac > 0 and mode == "train":
                     # [2026-09-22] OHEM: 保留全部正边 + 最难的一批负边 (按 pos_weight 加权后的逐边损失排序)
-                    _le = F.binary_cross_entropy_with_logits(_e_logits, y_edges,
+                    _le = F.binary_cross_entropy_with_logits(_e_logits_m, _ye_m,
                                                              pos_weight=self._pw_edges.to(_e_logits.device),
                                                              reduction="none")
-                    _neg = y_edges < 0.5
+                    _neg = _ye_m < 0.5
                     _n_neg = int(_neg.sum().item())
                     _k = max(1, int(self.edge_ohem_frac * _n_neg))
                     if _n_neg > 0 and _k < _n_neg:
@@ -1507,19 +1602,20 @@ class DFEILightningModule(L.LightningModule):
                     else:
                         loss["tt_edges"] += _le.mean()
                 elif use_focal:
-                    loss["tt_edges"] += focal_bce_with_logits(_e_logits, y_edges,
+                    loss["tt_edges"] += focal_bce_with_logits(_e_logits_m, _ye_m,
                                                               pos_weight=self._pw_edges,
                                                               gamma=self.prune_focal_gamma)
                 else:
-                    loss["tt_edges"] += self.edge_criterion(_e_logits, y_edges)
+                    loss["tt_edges"] += self.edge_criterion(_e_logits_m, _ye_m)
                 if mode == "test" and self.configs["plt_edges"]:
                     get_block_score(log, block.edge_weights[('tracks', 'to', 'tracks')].squeeze(), y_edges, i,
                                     var="edges")
                 # ==== [2026-09-22] v614: 边头 pairwise/listwise ranking 损失 (只在最后一个 block) ====
                 if (self.edge_rank_w > 0 and mode == "train"
                         and i == len(self.model._blocks) - 1):
-                    _rl = edge_rank_loss(_e_logits, y_edges,
-                                         outputs[('tracks', 'to', 'tracks')].edge_index,
+                    _ei_r = (outputs[('tracks', 'to', 'tracks')].edge_index if _gm is None
+                             else outputs[('tracks', 'to', 'tracks')].edge_index[:, _gm])
+                    _rl = edge_rank_loss(_e_logits_m, _ye_m, _ei_r,
                                          batch['tracks'].batch,
                                          n_neg=self.edge_rank_nneg, margin=self.edge_rank_margin,
                                          mode=self.edge_rank_mode)
@@ -1680,9 +1776,14 @@ class DFEILightningModule(L.LightningModule):
         # 对准"整条真值链被剪掉"的失败模式: 罚每条链里**最弱**的那个点/边。
         if mode == "train" and (self.chain_recall_w > 0 or self.chain_recall_edge_w > 0):
             _tt = batch[('tracks', 'to', 'tracks')]
+            # [方向4] 几何窗口屏蔽: 只让链级 recall 看到窗口内的边 (y/edge_index/edge_logits 同步子集)
+            _cr_edge_in = (block.edge_logits[('tracks', 'to', 'tracks')] if _gm is None
+                           else block.edge_logits[('tracks', 'to', 'tracks')][_gm])
+            _cr_y = _tt.y if _gm is None else _tt.y[_gm]
+            _cr_ei = _tt.edge_index if _gm is None else _tt.edge_index[:, _gm]
             _cr_node, _cr_edge = chain_recall_loss(
-                block.node_logits['tracks'], block.edge_logits[('tracks', 'to', 'tracks')],
-                _tt.y, _tt.edge_index, batch['tracks'].x.shape[0],
+                block.node_logits['tracks'], _cr_edge_in,
+                _cr_y, _cr_ei, batch['tracks'].x.shape[0],
                 thr=self.chain_recall_thr, tau=self.chain_recall_tau)
             if _cr_node is not None:
                 combined_loss = combined_loss + self.chain_recall_w * _cr_node
@@ -1718,6 +1819,8 @@ class DFEILightningModule(L.LightningModule):
                        else torch.zeros(_n_nodes, dtype=torch.long, device=_lab.device))
                 # 只计"两端属于同一非负链 id"的边
                 _same = (_lab[_ea] >= 0) & (_lab[_ea] == _lab[_eb])
+                if _gm is not None:      # [方向4] 窗口外候选边不进最弱环损失
+                    _same = _same & _gm
                 if bool(_same.any()):
                     # 事件隔离: 唯一键 = 事件 id * n_nodes + 链 id (链 id < n_nodes, 跨事件必不碰撞)
                     _key = _ev[_ea[_same]] * _n_nodes + _lab[_ea[_same]]
@@ -1749,19 +1852,27 @@ class DFEILightningModule(L.LightningModule):
                 _pt_n = batch['tracks'].x.shape[0]
                 _pt_ev = (batch['tracks'].batch if 'batch' in batch['tracks']
                           else torch.zeros(_pt_n, dtype=torch.long, device=_pt_logits.device))
+                # [方向4] 几何窗口屏蔽: 三项划分损失的 logits/y/edge_index 同步子集 (窗口外边不参与)
+                if _gm is not None:
+                    _pt_logits = _pt_logits[_gm]
+                    _pt_y_in = _pt.y[_gm]
+                    _pt_ei_in = _pt.edge_index[:, _gm]
+                else:
+                    _pt_y_in = _pt.y
+                    _pt_ei_in = _pt.edge_index
                 if self.part_trans_w > 0:
-                    _ltr = part_trans_loss(_pt_logits, _pt.y, _pt.edge_index, _pt_n)
+                    _ltr = part_trans_loss(_pt_logits, _pt_y_in, _pt_ei_in, _pt_n)
                     if _ltr is not None:
                         loss["part_trans"] = _ltr
                         log.setdefault("part_trans_loss", []).append(float(_ltr))
                 if self.part_excl_w > 0:
-                    _lex = part_excl_loss(_pt_logits, _pt.y, _pt.edge_index, _pt_n,
+                    _lex = part_excl_loss(_pt_logits, _pt_y_in, _pt_ei_in, _pt_n,
                                           tau=self.part_excl_tau)
                     if _lex is not None:
                         loss["part_excl"] = _lex
                         log.setdefault("part_excl_loss", []).append(float(_lex))
                 if self.part_f1_w > 0:
-                    _lf1 = part_f1_loss(_pt_logits, _pt.y, _pt.edge_index, _pt_n, _pt_ev)
+                    _lf1 = part_f1_loss(_pt_logits, _pt_y_in, _pt_ei_in, _pt_n, _pt_ev)
                     if _lf1 is not None:
                         loss["part_f1"] = _lf1
                         log.setdefault("part_f1_loss", []).append(float(_lf1))
@@ -1807,7 +1918,13 @@ class DFEILightningModule(L.LightningModule):
             if self.configs["node_prune"]:
                 outputs["node_weights"] = block.node_weights["tracks"].squeeze()
             if self.configs["edge_prune"]:
-                outputs["edge_weights"] = block.edge_weights[('tracks', 'to', 'tracks')].squeeze()
+                _ew_out = block.edge_weights[('tracks', 'to', 'tracks')].squeeze()
+                # ==== [方向4] 推理阶段几何候选门: 非候选边分数置 0 (乘性门, 等效 -inf 偏置) ====
+                # 窗口外 -> 边权 0 < edge_prune_thr, 不可能被选中; 窗口内仍由**学习分数**决定。
+                # _geomcand_keep=None (默认 / 未开 gate) 时逐位不变。
+                if self.geomcand_gate and self._geomcand_keep is not None:
+                    _ew_out = _ew_out * self._geomcand_keep.to(_ew_out.device, _ew_out.dtype)
+                outputs["edge_weights"] = _ew_out
             # Getting the PV decisions
             if self.configs["pv_asso"]:
                 pv_asso_des = {"pred": block.edge_weights[('tracks', 'to', 'pvs')].squeeze(), "minIP": minip,

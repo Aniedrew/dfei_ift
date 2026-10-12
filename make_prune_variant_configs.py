@@ -550,6 +550,57 @@ VARIANTS["part_all_w3"] = _part("allw3", 705, part_trans_w=3.0, part_excl_w=3.0,
 # 预期测: 排他性的"质量集中度"对温度是否敏感 (tau<1 更接近硬分配)。
 VARIANTS["part_excl_tau03"] = _part("excltau03", 706, part_excl_w=1.0, part_excl_tau=0.3)
 
+# ============================================================================
+# 2026-10-13 方向4: 几何候选生成 (geometry-based candidate generation)
+#
+# 问题: 现在 recall 由**学出来的**边二分类头决定 (漏一条真值边整条链报废), 给不出召回保证;
+#   且下游要在 O(N^2) 里学占比极低的真值边。本方向把"生成候选"从学习里剥离: 用**不学习**的
+#   纯几何量 (dR / DOCA / |Δ起点|, 由 derive_pruning_features 现算, 绕开上游 log_DOCA_reco 的
+#   bug) 定义候选窗口 -> 召回由物理保证, 学习只在干净子集上打分。
+# 实现 (dfei_lightning_module.py):
+#   geomcand_train_mask: 训练时把边剪枝/LCAG 的**损失统计**限制在候选集内, 并打印"被窗口漏掉的
+#       真值边比例";
+#   geomcand_gate: 推理(test)时把候选作为**乘性门**接到学习分数上 (非候选边分数置 0 -> 不可能选中)。
+#   两开关独立, 缺省 False -> 与 v654 逐位一致 (已在单测 + 真实 CPU 冒烟验证)。
+#
+# 窗口阈值**来自第一步的离线标定** (analyze_geomcand_windows.py, 200 事件真实 MC inclusive_00342451,
+#   946508 边 / 1112 真值结构边 / 147 真值链; 表见 report_figs/geomcand_study.json):
+#     loose (dR<=0.30, DOCA<=5.0mm, |Δ起点|<=200mm): 真值边 recall=0.801 / 候选压缩 1.55x / 链恢复上界 0.667
+#     mid   (dR<=0.25, DOCA<=0.5mm, |Δ起点|<=200mm): recall=0.557 / 压缩 3.63x / 上界 0.381
+#     tight (dR<=0.20, DOCA<=0.5mm, |Δ起点|<=50mm):  recall=0.315 / 压缩 11.86x / 上界 0.177
+#   关键发现: 几何窗口**无法同时**给出高召回与强压缩 (recall>0.9 时压缩<1.5x) -> 这正是"学习在
+#   窗口内打分"要补的那一段; loose 档的链恢复上界 0.667 已高于 v654 的 chain_surv 基准 0.523。
+#
+# 命名: 本方向统一用 geomcand 前缀; log_version 从 1001 起。生成用 _geomcand(**over) 从
+#   _v654_plus 派生 -> 除新开的 1~2 个键外与 v654 逐键一致 (干净的单/双变量对照)。
+# ============================================================================
+_GEO_LOOSE = dict(geomcand_max_r=0.30, geomcand_max_doca=5.0, geomcand_max_dz=200.0)
+_GEO_MID = dict(geomcand_max_r=0.25, geomcand_max_doca=0.5, geomcand_max_dz=200.0)
+_GEO_TIGHT = dict(geomcand_max_r=0.20, geomcand_max_doca=0.5, geomcand_max_dz=50.0)
+
+
+def _geomcand(slug, log_version, **over):
+    """以 v654 全部键为基, 追加本方向的新开关 (geomcand_*) 与 tag/log_version。
+
+    除 over 中列出的键外与 v654 逐键一致 -> 干净的单/双变量对照; 生成后逐一 diff 复核。
+    """
+    d = _v654_plus(**over)
+    d["tag"] = f"geomcand_{slug}_{log_version}"
+    d["log_version"] = log_version
+    return d
+
+
+# ---- 三档窗口 (只开 geomcand_train_mask): 用第一步标定的 loose/mid/tight 阈值 ----
+VARIANTS["geomcand_loose"] = _geomcand("loose", 1001, geomcand_train_mask=True, **_GEO_LOOSE)
+VARIANTS["geomcand_mid"] = _geomcand("mid", 1002, geomcand_train_mask=True, **_GEO_MID)
+VARIANTS["geomcand_tight"] = _geomcand("tight", 1003, geomcand_train_mask=True, **_GEO_TIGHT)
+# ---- 只开 gate (推理门控), 用中间档窗口 ----
+VARIANTS["geomcand_gate"] = _geomcand("gate", 1004, geomcand_gate=True, **_GEO_MID)
+# ---- mask + gate 同开 (训练在候选集上学 + 推理把候选作为乘性门) ----
+VARIANTS["geomcand_both"] = _geomcand("both", 1005, geomcand_train_mask=True, geomcand_gate=True,
+                                      **_GEO_MID)
+
+
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
                 "normalization_dict.pt")   # 0904 生产用的归一化字典 (delta_z0 的 center/scale)
 
@@ -615,7 +666,13 @@ def main():
                        ("part_trans_w", "part_trans_w"),
                        ("part_excl_w", "part_excl_w"),
                        ("part_excl_tau", "part_excl_tau"),
-                       ("part_f1_w", "part_f1_w")]:
+                       ("part_f1_w", "part_f1_w"),
+                       # [2026-10-13] 方向4: 几何候选生成 (训练掩码 + 推理门控 + 窗口阈值)
+                       ("geomcand_train_mask", "geomcand_train_mask"),
+                       ("geomcand_gate", "geomcand_gate"),
+                       ("geomcand_max_r", "geomcand_max_r"),
+                       ("geomcand_max_doca", "geomcand_max_doca"),
+                       ("geomcand_max_dz", "geomcand_max_dz")]:
             if k in v:
                 c["inference"][key] = v[k]
         if v.get("dz_dict"):
