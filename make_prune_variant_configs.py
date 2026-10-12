@@ -402,6 +402,104 @@ VARIANTS = {
                                      early_stop_min_delta=0.005)),
 }
 
+# ============================================================================
+# 2026-10-13 层6: 以 **v654 为固定底子** 的一次性大批量铺开 (v656..v675, 共 20 个臂)。
+#
+# 底子为什么是 v654: v654 = v648 + 链级 chain_recall 最弱环损失 (w=5/5, thr=0.9, tau=0.1),
+#   3000 事件基准上把主判据"整链完整恢复比例 chain_surv@0.9"从 35.8% 抬到 52.3% ——
+#   是本项目当前最好底子。本批**一律以 v654 为底, 只改动下游/损失侧**。
+#
+# 实现方式: 全部由 _V654 = VARIANTS["v654"] 派生, 用 _v654_plus(**over) 只覆盖列出的键 ->
+#   保证每个臂除自己那 1~2 个键外与 v654 **逐键一致** (便于干净的单/双变量对照,
+#   也避免重复粘贴 v654 那一大段 dict 时手抖改错键)。生成后逐一 diff 复核。
+#
+# 覆盖方向 (对应任务里的 6 组):
+#   组1 链级损失族 (已验证方向的精调)          : v656..v661
+#   组2 辅助头权重 (改变"重建什么"的侧重)      : v662..v666
+#   组3 边打分器训练方式                       : v667..v669
+#   组4 下游结构/注意力                        : v670..v671
+#   组5 特征家族补齐 (顶点+端点对称直连)       : v672..v673
+#   组6 监控/选择                              : v674..v675
+#
+# 因总量上限 20 而**未纳入**的旋钮及原因 (见返回值):
+#   chain_recall_thr=0.8 / chain_recall_tau=0.5 (各留一个代表值探方向即可, 权重扫描优先);
+#   event_count_weight (v630 实测 -19%, 且需新开头, 信息量低);
+#   edge_pos_weight_scale=2.0 (v612/v613 实测 -12~-16%, 已知有害)。
+# ============================================================================
+_V654 = VARIANTS["v654"]
+
+
+def _v654_plus(**over):
+    """以 v654 全部键为基, 仅覆盖 over 中列出的键 -> 保证单/双变量干净。"""
+    d = dict(_V654)
+    d.update(over)
+    return d
+
+
+# ---- 组1: 链级损失族 (v654 已验证: chain_recall w=5/5, thr=0.9, tau=0.1) ----
+# 预期: 找 chain_recall 的最优权重 / 阈值 / 锐度, 并试更强的最弱环(softmin)组合。
+VARIANTS["v656"] = _v654_plus(chain_recall_weight=2.0, chain_recall_edge_weight=2.0,
+                              tag="v656_cr_w2")        # 权重减半: 确认 5 是否过强 / 边AP是否被压
+VARIANTS["v657"] = _v654_plus(chain_recall_weight=10.0, chain_recall_edge_weight=10.0,
+                              tag="v657_cr_w10")       # 权重翻倍: chain_surv 与难池AP 的折中点
+VARIANTS["v658"] = _v654_plus(chain_recall_weight=20.0, chain_recall_edge_weight=20.0,
+                              tag="v658_cr_w20")       # 权重×4: 上限 / 是否开始伤边级AP
+VARIANTS["v659"] = _v654_plus(chain_recall_thr=0.7, tag="v659_cr_thr07")
+                              # 阈值降到 0.7 (推理剪枝在 0.95): 目标更松 -> 是否反而更稳
+VARIANTS["v660"] = _v654_plus(chain_recall_tau=0.3, tag="v660_cr_tau03")
+                              # 温度 0.1->0.3 (更软): 更平滑的链级梯度是否更易优化
+VARIANTS["v661"] = _v654_plus(chain_weakest_w=3.0, chain_weakest_gamma=30.0,
+                              tag="v661_weakest_w3g30")
+                              # 与 chain_recall 互补的 softmin 最弱环损失更强版本 (v653 只 w=1,γ=10)
+
+# ---- 组2: 辅助头权重 (单变量: 只改一个下游损失权重) ----
+# 预期: 看"把梯度更多/更少投给其它头"是否通过共享主干间接改善剪枝链存活。
+VARIANTS["v662"] = _v654_plus(lca_weight=20.0, tag="v662_lca_x2")     # LCA 权重 10->20
+VARIANTS["v663"] = _v654_plus(lca_weight=5.0, tag="v663_lca_x05")     # LCA 权重 10->5
+VARIANTS["v664"] = _v654_plus(pv_asso_weight=2.0, tag="v664_pvasso_x2")   # PV关联头权重 1->2
+VARIANTS["v665"] = _v654_plus(pv_asso_weight=0.5, tag="v665_pvasso_x05")  # PV关联头权重 1->0.5
+VARIANTS["v666"] = _v654_plus(dir_head_weight=10.0,
+                              gn=dict(_V654["gn"], MLP_infer_dir_head=True),
+                              tag="v666_dirhead_w10")
+                              # 打开剪枝MLP的"方向头"(v654 里该头是关的 -> 权重无意义), 用 v618 的 w=10
+
+# ---- 组3: 边打分器的训练方式 (单变量) ----
+VARIANTS["v667"] = _v654_plus(edge_rank_weight=20.0, tag="v667_rank_x2")   # pairwise ranking 权重 10->20
+VARIANTS["v668"] = _v654_plus(edge_rank_mode="infonce", tag="v668_rank_infonce")
+                              # ranking 从 hinge 换成 listwise(InfoNCE): 直接约束顶部难负例
+VARIANTS["v669"] = _v654_plus(edge_ohem_frac=0.25, tag="v669_ohem025")
+                              # OHEM 保留最难 25% 负边 (已知在旧底子上 -12~-16%, 在链级损失底子上复检)
+
+# ---- 组4: 下游结构/注意力 (单变量, 挂最后一个 GN block) ----
+VARIANTS["v670"] = _v654_plus(
+    gn=dict(_V654["gn"], context_prune=dict(mode="attn", heads=4, hidden=32, refine_edge=True)),
+    tag="v670_ctxprune")
+                              # 上下文感知剪枝头: 让点/边裁决看到邻域分数 (CRF/SAGPool 式)
+VARIANTS["v671"] = _v654_plus(
+    gn=dict(_V654["gn"], line_graph_attn=True, line_graph_rounds=2,
+            line_graph_heads=4, line_graph_hidden=64),
+    tag="v671_linegraph")
+                              # tt边图(LCAG)边-边注意力 2 轮: 结构性攻"跨链假边" (传递性)
+
+# ---- 组5: 特征家族补齐 (必须同步 extra_edge_dim, 靠冒烟卡维度自洽) ----
+# v654 边派生维 = 7(基础)+2(三角)+3(顶点几何)+6(竞争) = 18。
+VARIANTS["v672"] = _v654_plus(derived_vertex=True, derived_pair_sym=True,
+                              gn=dict(_V654["gn"], extra_edge_dim=45),
+                              tag="v672_vertex_psym")
+                              # +3(次级顶点一致性 zcpa/flight/collin) +24(端点对称直连) = 45 维
+VARIANTS["v673"] = _v654_plus(derived_pair_sym=True,
+                              gn=dict(_V654["gn"], extra_edge_dim=42),
+                              tag="v673_psym")
+                              # 只加端点对称直连 [x_i+x_j,|x_i-x_j|,x_i*x_j] (24 维) = 42 维
+
+# ---- 组6: 监控 / 选择 (改变选 ckpt 的稳定性与训练长度) ----
+VARIANTS["v674"] = _v654_plus(
+    settings_extra=dict(_V654["settings_extra"], validate_prune_events=3000),
+    tag="v674_val3000")
+                              # val 剪枝事件 1000->3000: ckpt 选择的 val_prune_ap 更稳
+VARIANTS["v675"] = _v654_plus(epochs=120, tag="v675_ep120")
+                              # 训练 60->120 轮 (patience 仍 20): 是否欠训练
+
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
                 "normalization_dict.pt")   # 0904 生产用的归一化字典 (delta_z0 的 center/scale)
 
