@@ -983,6 +983,33 @@ class DFEILightningModule(L.LightningModule):
                   f"excl_w={self.part_excl_w} (tau={self.part_excl_tau}) f1_w={self.part_f1_w}",
                   flush=True)
 
+        # ==== [2026-10-13] 方向3: 可学习顺序重组合解码器 (anti-kT 式层次聚类) ====
+        # 动机: 重建最后一步"取连通分量"不保排他性、不显式决定链数; 换成 sequential
+        #   recombination: 反复合并最近的一对簇, 天然独占、无需预设簇数。距离度量由
+        #   模型边分数 p_e + 几何共同决定: d = -ln(p_e) + lam*d_geom。
+        #   本模块负责 (a) 训练可学习标量 lam / cut 的**可微代理损失** (_seqrec_loss);
+        #   (b) 把 seqrec 解码器参数注入 EventReconstruction 供 test 时使用 (seqrec_use)。
+        #   缺省开关全关 (seqrec_loss_weight=0, seqrec_use=False) -> 与旧行为逐位一致。
+        self.seqrec_use = bool(self.configs.get("seqrec_use", False))
+        self.seqrec_loss_weight = float(self.configs.get("seqrec_loss_weight", 0.0))
+        self.seqrec_metric = self.configs.get("seqrec_metric", "mix")
+        self.seqrec_linkage = self.configs.get("seqrec_linkage", "nearest")
+        self.seqrec_lam = float(self.configs.get("seqrec_lam", 1.0))
+        self.seqrec_cut = float(self.configs.get("seqrec_cut", 0.02))
+        self.seqrec_lam_learn = bool(self.configs.get("seqrec_lam_learn", False))
+        self.seqrec_cut_learn = bool(self.configs.get("seqrec_cut_learn", False))
+        self._seqrec_dgeom_col = int(self.configs.get("seqrec_dgeom_col", 9))  # der_edges 的 doca/100 列
+        self.seqrec_params = None
+        if self.seqrec_lam_learn or self.seqrec_cut_learn or self.seqrec_loss_weight > 0:
+            from wmpgnn.reconstruction.sequential_recombine import SeqRecParams
+            self.seqrec_params = SeqRecParams(lam=self.seqrec_lam, cut=self.seqrec_cut,
+                                              lam_learn=self.seqrec_lam_learn,
+                                              cut_learn=self.seqrec_cut_learn)
+            print(f"[seqrec] 顺序重组合解码器启用: use={self.seqrec_use} metric={self.seqrec_metric} "
+                  f"linkage={self.seqrec_linkage} lam={self.seqrec_lam}(learn={self.seqrec_lam_learn}) "
+                  f"cut={self.seqrec_cut}(learn={self.seqrec_cut_learn}) w={self.seqrec_loss_weight}",
+                  flush=True)
+
         # ==== [2026-10-13] 方向4: 几何候选生成 (用物理量而非分类器决定候选集) ====
         # 动机: 现在 recall 由学出来的边二分类头决定, 漏一条真值边整条链报废 (AND 语义), 给不出
         #   召回保证; 且下游要在 O(N^2) 的候选里学占比极低的真值边。本方向把"生成候选"从学习里
@@ -1016,6 +1043,9 @@ class DFEILightningModule(L.LightningModule):
         self.tst_log = init_logs(configs, mode="test")
         # init event reconstruction class
         self.evt_reco = EventReconstruction(configs)
+        # 方向3: 把 seqrec 解码参数与归一化字典注入重建器 (供 test 时按 seqrec_use 使用)
+        self.evt_reco._nc, self.evt_reco._ns = self._nc, self._ns
+        self.evt_reco.seqrec_params = self.seqrec_params
 
         # Pruning threshold for reco
         self.edge_prune = configs["inference"]["edge_prune_thr"]
@@ -1071,10 +1101,18 @@ class DFEILightningModule(L.LightningModule):
             has_lg = any("_line_attn." in k for k in checkpoint.get("state_dict", {}))
             if not has_lg:
                 new_heads.append("line_graph_attn")
+        # [2026-10-13] 方向3: seqrec 可学习标量 (旧 ckpt 无 -> 重置优化器状态)
+        if getattr(self, "seqrec_params", None) is not None:
+            has_sr = any(k.startswith("seqrec_params.") for k in checkpoint.get("state_dict", {}))
+            if not has_sr:
+                new_heads.append("seqrec_params")
         if new_heads:
             print(f"[heads] 旧 checkpoint 无 {new_heads} 头: "
                   "重置 optimizer/lr_scheduler 状态 (新头无历史动量, 从当前 lr 重新起步)")
-            opt = self.optimizer_class(self.model.parameters(), **self.optimizer_params)
+            _all = list(self.model.parameters())
+            if getattr(self, "seqrec_params", None) is not None:
+                _all += list(self.seqrec_params.parameters())
+            opt = self.optimizer_class(_all, **self.optimizer_params)
             checkpoint["optimizer_states"] = [opt.state_dict()]
             sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 opt, mode="min", factor=0.5, patience=5, min_lr=1e-6)
@@ -1103,7 +1141,9 @@ class DFEILightningModule(L.LightningModule):
                          # [2026-09-24] 三个新模块 (同样挂在 GN block 内, 零初始化/新头 -> 允许缺失)
                          or "_pv_ov_adapter." in k or "_evt_bias." in k or "_evt_count." in k
                          # [2026-09-26] tt 边图注意力 (挂最后一个 GN block 内, 零初始化 -> 允许缺失)
-                         or "_line_attn." in k)]
+                         or "_line_attn." in k
+                         # [2026-10-13] 方向3: seqrec 可学习标量 (lam/cut), 旧 ckpt 无
+                         or k.startswith("seqrec_params."))]
             shape_mm = []
             for k in cur:
                 if k not in state_dict:
@@ -1140,8 +1180,60 @@ class DFEILightningModule(L.LightningModule):
             batch["tracks"].x = torch.cat([batch["tracks"].x, batch["tracks"].pid], dim=1)
         return self.model(batch)
 
+    def _seqrec_loss(self, batch, outputs, block):
+        """方向3: 顺序重组合解码器的可微代理损失 —— 训练度量几何权重 lam 与阈值 cut。
+
+        距离 d = -ln(p_e + eps) + lam * d_geom。链内 (真姐妹, y>0) 边距离应 < 链间边:
+          - metric loss (ranking hinge) -> 训练 lam (经 d_geom 项) 与边头 (经 p_e);
+          - cut loss    (双边 hinge)     -> 训练阈值 cut (链内应 < cut < 链间)。
+        几何 d_geom 复用 derive_pruning_features 现算的 doca/100 (绕开上游 log_DOCA_reco 噪声列)。
+        缺省返回 None (不参与组合损失)。
+        """
+        try:
+            from wmpgnn.reconstruction.sequential_recombine import (seqrec_metric_loss,
+                                                                   seqrec_cut_loss,
+                                                                   geom_edge_features,
+                                                                   combine_geom)
+            tt = ("tracks", "to", "tracks")
+            logits = self.model._blocks[-1].edge_logits[tt].reshape(-1)
+            p = torch.sigmoid(logits)
+            y = batch[tt].y
+            y_bin = (y.argmax(dim=-1) > 0) if (y.dim() == 2 and y.shape[-1] > 1) else (y > 0)
+            # 几何 d_geom (现算): 只用 batch['tracks'].x 前 6 列 + tt 边索引, **不依赖**
+            # 被模型前向改写过的 tr-pv 图 (derive_pruning_features 在后向阶段会读到被覆盖的
+            # tr-pv 边 -> 尺寸错乱, 故这里用自包含的 geom_edge_features)。
+            x = batch["tracks"].x
+            if x.shape[1] < 6:
+                return None
+            ei = batch[tt].edge_index
+            gi = geom_edge_features(x, ei.T, self._nc, self._ns)
+            dgeom = combine_geom(gi).detach()               # doca/100 (只有几何, 无梯度)
+            if dgeom.shape[0] != p.shape[0]:
+                return None
+            lam = self.seqrec_params.lam if self.seqrec_lam_learn \
+                else torch.tensor(self.seqrec_lam, device=p.device)
+            total, got = None, False
+            lm = seqrec_metric_loss(p, dgeom, y_bin, metric=self.seqrec_metric, lam=lam)
+            if lm is not None:
+                total = lm
+                got = True
+            if self.seqrec_cut_learn and self.seqrec_params.cut is not None:
+                lc = seqrec_cut_loss(p, dgeom, y_bin, metric=self.seqrec_metric,
+                                     lam=lam, cut=self.seqrec_params.cut)
+                if lc is not None:
+                    total = lc if total is None else total + lc
+                    got = True
+            return total if got else None
+        except Exception as e:
+            print(f"[seqrec] WARN: {type(e).__name__}: {e}")
+            return None
+
     def configure_optimizers(self):
-        optimizer = self.optimizer_class(self.model.parameters(), **self.optimizer_params)
+        params = list(self.model.parameters())
+        # 方向3: seqrec 可学习标量 (lam/cut) 加入优化器 (仅当其存在)
+        if getattr(self, "seqrec_params", None) is not None:
+            params += list(self.seqrec_params.parameters())
+        optimizer = self.optimizer_class(params, **self.optimizer_params)
 
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -1878,6 +1970,13 @@ class DFEILightningModule(L.LightningModule):
                         log.setdefault("part_f1_loss", []).append(float(_lf1))
             except Exception as e:
                 print(f"[part] WARN: {type(e).__name__}: {e}")
+        # ==== [2026-10-13] 方向3: seqrec 度量/阈值可微代理损失 (训练 lam / cut) ====
+        # 缺省 seqrec_loss_weight=0 -> 整段不执行, 与旧行为逐位一致; 权重在下方组合处统一乘。
+        if mode == "train" and self.seqrec_loss_weight > 0 and self.seqrec_params is not None:
+            _sr = self._seqrec_loss(batch, outputs, block)
+            if _sr is not None:
+                loss["seqrec"] = _sr
+                log.setdefault("seqrec_loss", []).append(float(_sr.detach()))
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:
@@ -1907,6 +2006,9 @@ class DFEILightningModule(L.LightningModule):
             combined_loss = combined_loss + self.part_excl_w * loss["part_excl"]
         if self.part_f1_w > 0 and "part_f1" in loss:
             combined_loss = combined_loss + self.part_f1_w * loss["part_f1"]
+        # [2026-10-13] 方向3: seqrec 代理损失 (训练 lam / cut)
+        if self.seqrec_loss_weight > 0 and "seqrec" in loss:
+            combined_loss = combined_loss + self.seqrec_loss_weight * loss["seqrec"]
 
         # 极端防御: 组合 loss 仍非有限或异常巨大时, 置为 0 损失, 避免梯度爆炸污染训练
         if not torch.isfinite(combined_loss) or combined_loss > 1e5:

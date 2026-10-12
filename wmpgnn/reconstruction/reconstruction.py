@@ -62,6 +62,11 @@ class EventReconstruction:
         #   "builtin"     -> scorer 挂在 model 上 (联合训练), 由 lightning module 注入 self.chain_scorer
         #   "ckpt路径"    -> 独立训练的 scorer checkpoint, 首次使用时按数据维度加载
         self.chain_scorer = None
+        # ==== 方向3: seqrec 解码器 (可学习顺序重组合) 参数与归一化字典 ====
+        # 由 lightning module 注入 (self.seqrec_params / self._nc / self._ns);
+        # seqrec_use=False (缺省) 时整段不执行 -> 与旧行为逐位一致。
+        self.seqrec_params = None
+        self._nc, self._ns = None, None
         self.chain_score_thr = self.configs.get("selection_mlp_margin", None)
         sel_ckpt = self.configs.get("selection_mlp", "")
         self._sel_ckpt = sel_ckpt
@@ -294,6 +299,25 @@ class EventReconstruction:
                 reco_edge_w = edge_weights[tr_tr_mask][edge_mask][edge_selbool]
             graphs[i]._edge_w_reco = reco_edge_w.cpu()
 
+            # ==== 方向3: 为 seqrec 解码器挂载 逐边存活概率 p_e 与几何距离 d_geom ====
+            # (仅 seqrec_use 时计算; 缺省不执行 -> 逐位不变)
+            if self.configs.get("seqrec_use", False) and self._nc:
+                try:
+                    from wmpgnn.reconstruction.sequential_recombine import (geom_edge_features,
+                                                                           combine_geom)
+                    _x = graphs[i]['tracks'].x.cpu()
+                    _ei = graphs[i][('tracks', 'to', 'tracks')].edge_index.cpu()
+                    graphs[i]._seqrec_p = reco_edge_w.detach().cpu()
+                    if _ei.shape[1] > 0 and _x.shape[1] >= 6:
+                        _gd = geom_edge_features(_x, _ei.T, self._nc, self._ns)
+                        graphs[i]._seqrec_dgeom = combine_geom(_gd).detach().cpu()
+                    else:
+                        graphs[i]._seqrec_dgeom = None
+                except Exception as e:
+                    print(f"[seqrec] WARN 几何计算失败: {type(e).__name__}: {e}")
+                    graphs[i]._seqrec_p = None
+                    graphs[i]._seqrec_dgeom = None
+
             # 挂载剪枝后的权重/LCA到图上, 供链级打分 (选择MLP) 使用
             if self.configs.get("selection_mlp", ""):
                 if not self._scorer_init:
@@ -513,6 +537,46 @@ class EventReconstruction:
             print(f"[pv_cluster] WARN: {type(e).__name__}: {e} -> 回退全图")
             return _fallback()
 
+    def _reconstruct_seqrec(self, graph):
+        """方向3: 用 sequential recombination (anti-kT 式层次聚类) 取代连通分量。
+
+        在剪枝后的候选边 (模型判 LCA>0) 上, 用边存活概率 p_e 与几何距离 d_geom 计算
+        距离 d = -ln(p_e+eps)+lam*d_geom, 跑 anti-kT 式顺序重组合得到事件的**划分**
+        (每条径迹只属于一个簇); 再逐簇调用原 reconstruct_decay 解析链内结构/顺序。
+        返回 (rc_dict, num_clusters_per_order) —— 与 reconstruct_decay 同构。
+        """
+        import numpy as np
+        import pandas as pd
+        from wmpgnn.reconstruction.sequential_recombine import seqrec_chains
+
+        n_nodes = graph['tracks'].x.shape[0]
+        particle_keys = get_final_keys(graph).tolist()
+        tt = graph[('tracks', 'to', 'tracks')]
+        ei = tt.edge_index
+        arg = tt.lca.argmax(-1)
+        keep = (arg > 0)
+        metric = self.configs.get("seqrec_metric", "mix")
+        cols = {"senders": ei[0][keep].numpy(), "receivers": ei[1][keep].numpy(),
+                "LCA_dec": arg[keep].numpy(),
+                "p": graph._seqrec_p[keep].detach().numpy()}
+        dg = getattr(graph, "_seqrec_dgeom", None)
+        if dg is not None:
+            cols["dgeom"] = dg[keep].detach().numpy()
+        elif metric in ("geom", "mix"):
+            metric = "learned"          # 无几何量时退回纯学习度量 (安全降级)
+        if self.seqrec_params is not None:
+            lam = float(self.seqrec_params.lam.detach().cpu())
+            cut_t = self.seqrec_params.cut
+            cut = float(cut_t.detach().cpu()) if cut_t is not None \
+                else float(self.configs.get("seqrec_cut", 0.02))
+        else:
+            lam = float(self.configs.get("seqrec_lam", 1.0))
+            cut = float(self.configs.get("seqrec_cut", 0.02))
+        linkage = self.configs.get("seqrec_linkage", "nearest")
+        rc_dict, nclust = seqrec_chains(pd.DataFrame(cols), particle_keys, n_nodes,
+                                        metric=metric, cut=cut, linkage=linkage, lam=lam)
+        return rc_dict, nclust
+
     def reconstruct_single_evt(self, args):
         graph, pv_des, ft_des = args
 
@@ -523,6 +587,11 @@ class EventReconstruction:
             if self.configs.get("pv_cluster", False) and pv_des is not None:
                 # ==== 方案7: PV 分簇分层重建 ====
                 rc_dict, r_nclust_order = self._reconstruct_pv_clustered(graph, pv_des)
+            elif self.configs.get("seqrec_use", False) \
+                    and getattr(graph, "_seqrec_p", None) is not None:
+                # ==== 方向3: 用顺序重组合取代连通分量 ====
+                rc_dict, r_nclust_order = self._reconstruct_seqrec(graph)
+                particle_keys = get_final_keys(graph).tolist()
             else:
                 reco_LCA = lca_reco_matrix(graph, mode="reco")
                 particle_keys = get_final_keys(graph).tolist()

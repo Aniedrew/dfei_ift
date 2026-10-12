@@ -600,6 +600,63 @@ VARIANTS["geomcand_gate"] = _geomcand("gate", 1004, geomcand_gate=True, **_GEO_M
 VARIANTS["geomcand_both"] = _geomcand("both", 1005, geomcand_train_mask=True, geomcand_gate=True,
                                       **_GEO_MID)
 
+# ============================================================================
+# 2026-10-13 方向3: 可学习顺序重组合解码器 (anti-kT 式层次聚类), 取代"取连通分量"
+#
+# 动机: 重建最后一步 "取连通分量" (`reco_helper.reconstruct_decay` 的 nx.connected_components)
+#   不保排他性、不显式决定链数。换成 sequential recombination: 反复合并"最近"的一对簇,
+#   天然独占 (每条径迹只用一次)、不需预设簇数。距离度量可学习:
+#     d = -ln(p_e + eps) + lam * d_geom   (p_e=模型边存活概率; d_geom=DOCA/100, 现算)
+#   离线评测 (eval_seqrec_offline.py, v654 ckpt, 600 事件真实数据, 同一候选边+同一真值):
+#     连通分量基线   整链完整恢复 7.79% / 链级 P 33.5% / R 37.7%
+#     seqrec-learned 整链恢复 17.3% / P 50.3% / R 42.0%   (cut=0.02; 约 2.2x 整链恢复)
+#     seqrec-geom(无学习) 整链恢复 ~0% -> 证明**学出来的度量**是关键。
+#
+# 命名: 本方向统一用 seqrec 前缀; log_version 从 901 起。生成用 _seqrec(**over) 从
+#   _v654_plus 派生 -> 除新开的键外与 v654 逐键一致 (干净对照)。
+# 训练侧: dfei_lightning_module._seqrec_loss 用**可微代理损失**训练 lam (ranking hinge)
+#   与 cut (双边 hinge); 推理侧按 seqrec_use 在 EventReconstruction 里取代连通分量。
+#   缺省全关 -> 与 v654 逐位一致 (单测 + CPU 冒烟已核对)。
+# ============================================================================
+_SEQREC_BASE = 900
+
+
+def _seqrec(slug, log_version, **over):
+    """以 v654 全部键为基, 追加本方向的新开关 (seqrec_*) 与 tag/log_version。
+
+    除 over 中列出的键外与 v654 逐键一致 -> 干净的单/双变量对照; 生成后逐一 diff 复核。
+    """
+    d = _v654_plus(**over)
+    d["tag"] = f"seqrec_{slug}_{log_version}"
+    d["log_version"] = log_version
+    return d
+
+
+# ---- v901: lam 可学习 (度量 mix), cut 固定 0.02 (离线评测的甜点) ----
+VARIANTS["seqrec_learned"] = _seqrec("learned", 901,
+                                     seqrec_use=True, seqrec_metric="mix",
+                                     seqrec_lam=1.0, seqrec_lam_learn=True,
+                                     seqrec_cut=0.02, seqrec_cut_learn=False,
+                                     seqrec_loss_weight=1.0)
+# ---- v902: cut 作为可学习标量 (度量 learned), lam 固定 1.0 ----
+VARIANTS["seqrec_cutlearn"] = _seqrec("cutlearn", 902,
+                                      seqrec_use=True, seqrec_metric="learned",
+                                      seqrec_lam=1.0, seqrec_lam_learn=False,
+                                      seqrec_cut=0.02, seqrec_cut_learn=True,
+                                      seqrec_loss_weight=1.0)
+# ---- v903: lam 与 cut 同时可学习 (度量 mix) ----
+VARIANTS["seqrec_both"] = _seqrec("both", 903,
+                                  seqrec_use=True, seqrec_metric="mix",
+                                  seqrec_lam=1.0, seqrec_lam_learn=True,
+                                  seqrec_cut=0.02, seqrec_cut_learn=True,
+                                  seqrec_loss_weight=1.0)
+# ---- v904: 仅训练时用新度量 (推理仍走连通分量) —— 隔离"度量损失"与"解码器替换" ----
+VARIANTS["seqrec_trainonly"] = _seqrec("trainonly", 904,
+                                       seqrec_use=False, seqrec_metric="mix",
+                                       seqrec_lam=1.0, seqrec_lam_learn=True,
+                                       seqrec_cut=0.02, seqrec_cut_learn=True,
+                                       seqrec_loss_weight=1.0)
+
 
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
                 "normalization_dict.pt")   # 0904 生产用的归一化字典 (delta_z0 的 center/scale)
@@ -672,7 +729,16 @@ def main():
                        ("geomcand_gate", "geomcand_gate"),
                        ("geomcand_max_r", "geomcand_max_r"),
                        ("geomcand_max_doca", "geomcand_max_doca"),
-                       ("geomcand_max_dz", "geomcand_max_dz")]:
+                       ("geomcand_max_dz", "geomcand_max_dz"),
+                       # [2026-10-13] 方向3: 可学习顺序重组合解码器 (anti-kT 式层次聚类)
+                       ("seqrec_use", "seqrec_use"),
+                       ("seqrec_metric", "seqrec_metric"),
+                       ("seqrec_lam", "seqrec_lam"),
+                       ("seqrec_lam_learn", "seqrec_lam_learn"),
+                       ("seqrec_cut", "seqrec_cut"),
+                       ("seqrec_cut_learn", "seqrec_cut_learn"),
+                       ("seqrec_linkage", "seqrec_linkage"),
+                       ("seqrec_loss_weight", "seqrec_loss_weight")]:
             if k in v:
                 c["inference"][key] = v[k]
         if v.get("dz_dict"):
