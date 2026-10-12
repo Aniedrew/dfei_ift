@@ -111,6 +111,150 @@ def chain_recall_loss(node_logits, edge_logits, y, edge_index, n_nodes, thr=0.5,
     return l_node, l_edge
 
 
+def _unordered_pair_key(a, b, n_nodes):
+    """无序节点对 (a,b) 的唯一整数键。
+
+    用 min/max -> 与端点顺序无关, 因此任何基于该键的量对边方向天然对称
+    (本项目历史上被"有序对"泄漏坑过, 故显式取无序)。
+    """
+    lo = torch.minimum(a, b)
+    hi = torch.maximum(a, b)
+    return lo * n_nodes + hi
+
+
+def part_trans_loss(edge_logits, y, edge_index, n_nodes):
+    """[方向1a] 全局划分损失之一: 传递性惩罚 (同一簇关系必须传递)。
+
+    判据: 真值结构边本质是"簇关系" (同一真值链), 必须传递。对每两条**共用一个节点**的
+    真值同链边 e1=(x,z)、e2=(z,y), 第三边 e3=(x,y) 必然同链 (传递闭包), 且这类第三边
+    本就存在于候选边里。惩罚:
+        relu( min(p_e1, p_e2) - p_e3 )
+    即"前两环都判高分时, 闭合的第三环也必须高分"; 只罚"不闭合", 不罚闭合得更早。
+    对全 batch 所有这样的三元组取平均。返回标量或 None (无三元组时)。
+
+    端点对称: p_e 只依赖该候选边的标量 logit (与端点顺序无关); 三元组用无序键与
+    min/max 枚举 -> 交换任一真值边两端, 损失不变。
+    事件隔离: 三元组由"共用一个节点"定义 -> 两条边必然同事件 (跨事件节点不共享),
+    天然隔离; 且真值链 id 由 truth_chain_labels 对全图重编号 (跨事件不碰撞)。
+    实现: 用关联表 (每条真值边贡献两个端点条目) + 组内偏移配对 + searchsorted 查第三边,
+    全程张量操作, 无 Python 循环 (仅按"最大关联度"做常数次偏移, 与三元组数无关)。
+    """
+    p = torch.sigmoid(edge_logits.reshape(-1))
+    ea = edge_index[0].long()
+    eb = edge_index[1].long()
+    yb = (y > 0)
+    yb = yb.squeeze(-1) if yb.dim() > 1 else yb
+    lab = truth_chain_labels(y, edge_index, n_nodes)      # 全局唯一链 id (跨事件不碰撞), -1=背景
+    te = yb & (lab[ea] >= 0) & (lab[ea] == lab[eb])       # 真值同链条边
+    tidx = te.nonzero().flatten()
+    if tidx.numel() < 2:
+        return None
+    ckey = _unordered_pair_key(ea, eb, n_nodes)           # 候选边无序键
+    skey, sidx = torch.sort(ckey)
+    n_edge = int(ckey.numel())
+    # 关联表: 每条真值边贡献两个有向端点条目 (node, other, edge_idx)
+    inc_node = torch.cat([ea[tidx], eb[tidx]])
+    inc_oth = torch.cat([eb[tidx], ea[tidx]])
+    inc_e = torch.cat([tidx, tidx])
+    order = torch.argsort(inc_node, stable=True)
+    inc_node, inc_oth, inc_e = inc_node[order], inc_oth[order], inc_e[order]
+    _, inv, counts = torch.unique(inc_node, return_inverse=True, return_counts=True)
+    maxdeg = int(counts.max().item())
+    terms = []
+    for d in range(1, maxdeg):                             # 仅按关联度做常数次偏移, 非按三元组
+        n = inc_node.numel() - d
+        if n <= 0:
+            break
+        i = torch.arange(n, device=inc_node.device)
+        j = i + d
+        same = inv[i] == inv[j]                            # 落在同一节点 -> 两条真值边共用该节点
+        if not bool(same.any()):
+            continue
+        oi, oj = inc_oth[i[same]], inc_oth[j[same]]
+        e1, e2 = inc_e[i[same]], inc_e[j[same]]
+        k3 = _unordered_pair_key(oi, oj, n_nodes)          # 第三边 (x,y) 的无序键
+        pos = torch.searchsorted(skey, k3).clamp(max=n_edge - 1)
+        found = skey[pos] == k3                            # 第三边确为候选边
+        if not bool(found.any()):
+            continue
+        e3 = sidx[pos[found]]
+        terms.append(torch.relu(torch.minimum(p[e1[found]], p[e2[found]]) - p[e3]))
+    if not terms:
+        return None
+    return torch.cat(terms).mean()
+
+
+def part_excl_loss(edge_logits, y, edge_index, n_nodes, tau=1.0):
+    """[方向1b] 全局划分损失之二: 排他性惩罚 (一条径迹不应同时属于不同真值链)。
+
+    对每个节点 v: 取其所有候选边上的存活概率 p (sigmoid(logit/tau)), 归一化
+        q_i = p_i / (Σ_j p_j + eps);
+    按伙伴节点所属**真值链**分组 (另一端不是真值径迹的假边 -> 特殊组 -1), 得每组质量 m_g;
+    惩罚
+        Σ_v ( 1 - Σ_g m_g² )
+    质量集中在一个链 (或仅一条边) -> 0; 分散到多条链 -> 接近 1。对"有候选边的节点"取平均。
+    把非真值伙伴归到 -1 组: 否则排他性会退化成"鼓励把所有质量压到噪声边上"。
+    可选 part_excl_tau (温度): 在 logit 上加温度 p = sigmoid(logit/tau)。
+    事件隔离: 分组键 = 节点 id * BIG + (链 id + 1); 节点 id 全局唯一且真值链 id
+    (truth_chain_labels 全局重编号) 亦全局唯一 -> 两个事件各自内部的 "chain 0" 必落到不同组
+    (仓库里已有"跨事件链 id 碰撞"的对抗用例)。
+    端点对称: 每条候选边贡献两个方向条目, 分组只依赖"伙伴的链", 与边方向无关。
+    """
+    logits = edge_logits.reshape(-1)
+    p = torch.sigmoid(logits / tau) if tau != 1.0 else torch.sigmoid(logits)
+    ea = edge_index[0].long()
+    eb = edge_index[1].long()
+    lab = truth_chain_labels(y, edge_index, n_nodes)      # 节点真值链 id (-1=背景), 全局唯一
+    inc_v = torch.cat([ea, eb])
+    inc_p = torch.cat([eb, ea])
+    inc_pe = torch.cat([p, p])
+    inc_g = lab[inc_p]                                    # 伙伴的真值链 id
+    tot = torch.zeros(n_nodes, device=p.device, dtype=p.dtype).scatter_add_(0, inc_v, inc_pe)
+    q = inc_pe / (tot[inc_v] + 1e-8)
+    BIG = n_nodes + 2
+    gkey = inc_v * BIG + (inc_g + 1)                      # (节点, 伙伴链) 分组键, 事件隔离
+    uniq, inv = torch.unique(gkey, return_inverse=True)
+    m = torch.zeros(uniq.numel(), device=p.device, dtype=p.dtype).scatter_add_(0, inv, q)
+    uniq_v = torch.div(uniq, BIG, rounding_mode="floor")
+    sumsq = torch.zeros(n_nodes, device=p.device, dtype=p.dtype).scatter_add_(0, uniq_v, m * m)
+    valid = tot > 0                                       # 仅统计有候选边的节点
+    if not bool(valid.any()):
+        return None
+    return (1.0 - sumsq[valid]).mean()
+
+
+def part_f1_loss(edge_logits, y, edge_index, n_nodes, event_ids, eps=1e-6):
+    """[方向1c] 全局划分损失之三: 事件级集合 F1 (尺度无关的集合重叠目标, 取代逐边平均)。
+
+    每事件把候选边视为一个集合:
+        P = Σ_{候选边} p_e          (预测选中的总质量)
+        T = Σ_{真值结构边} p_e      (命中质量)
+        N = |真值结构边|
+        prec = T/(P+eps), rec = T/(N+eps), f1 = 2·prec·rec/(prec+rec+eps); loss = 1 - f1。
+    对事件取平均 (只统计 N>0 的事件)。与逐边 BCE 不同: 比值结构会**同时**压假边总分、抬真边总分。
+    事件隔离: P/T/N 都按 event_ids **在事件内**求和, 绝不跨事件混合。
+    端点对称: p_e 只依赖候选边标量 logit -> 与方向无关。返回标量或 None。
+    """
+    p = torch.sigmoid(edge_logits.reshape(-1))
+    ea = edge_index[0].long()
+    yb = (y > 0)
+    yb = yb.squeeze(-1) if yb.dim() > 1 else yb
+    lab = truth_chain_labels(y, edge_index, n_nodes)
+    te = yb & (lab[ea] >= 0)                              # 真值结构边 (y>0 边恒同链 -> 两端同链)
+    ev_e = event_ids[ea].long()
+    n_ev = int(event_ids.max().item()) + 1
+    P = torch.zeros(n_ev, device=p.device, dtype=p.dtype).scatter_add_(0, ev_e, p)
+    T = torch.zeros(n_ev, device=p.device, dtype=p.dtype).scatter_add_(0, ev_e[te], p[te])
+    N = torch.zeros(n_ev, device=p.device, dtype=p.dtype).scatter_add_(
+        0, ev_e[te], torch.ones_like(p[te]))
+    prec = T / (P + eps)
+    rec = T / (N + eps)
+    f1 = 2.0 * prec * rec / (prec + rec + eps)
+    valid = N > 0
+    if not bool(valid.any()):
+        return None
+    return (1.0 - f1[valid]).mean()
+
 
 def edge_rank_loss(logits, y, edge_index, node_ev, n_neg=64, margin=1.0, mode="hinge"):
     """边头 pairwise ranking 损失 (对准 precision/AUC, 而非被 pos_weight 主导的 BCE)。
@@ -821,6 +965,23 @@ class DFEILightningModule(L.LightningModule):
         if self.chain_weakest_w > 0:
             print(f"[chain_weakest] 最弱环链级存活损失启用: w={self.chain_weakest_w} "
                   f"gamma={self.chain_weakest_gamma}", flush=True)
+
+        # ==== [2026-10-13] 方向1: 全局划分损失 (传递性 / 排他性 / 集合F1) ====
+        # 动机: chain_recall / chain_weakest 只罚"链内最弱环节"(AND 语义), 缺另一半 ——
+        #   现有架构是"逐边二分类 + 取连通分量", 没有任何东西保证**划分一致性**:
+        #   一条径迹可同时属于两条链、跨链假边可两个都判高分。本组三项把划分一致性写进损失:
+        #     part_trans (1a): 真值同链共用一个节点的两条边 -> 第三边(闭合环)也必须高分;
+        #     part_excl  (1b): 一条径迹的存活质量不应分散到多条不同真值链上;
+        #     part_f1    (1c): 事件级集合 F1 (尺度无关的集合重叠, 取代逐边平均)。
+        #   三者可独立开关; 缺省全 0 -> 整段不执行, 与旧行为逐位一致。
+        self.part_trans_w = float(self.configs.get("part_trans_w", 0.0))
+        self.part_excl_w = float(self.configs.get("part_excl_w", 0.0))
+        self.part_excl_tau = float(self.configs.get("part_excl_tau", 1.0))
+        self.part_f1_w = float(self.configs.get("part_f1_w", 0.0))
+        if self.part_trans_w > 0 or self.part_excl_w > 0 or self.part_f1_w > 0:
+            print(f"[part] 全局划分损失启用: trans_w={self.part_trans_w} "
+                  f"excl_w={self.part_excl_w} (tau={self.part_excl_tau}) f1_w={self.part_f1_w}",
+                  flush=True)
 
         self.trn_log, self.val_log = init_logs(configs)
         self.tst_log = init_logs(configs, mode="test")
@@ -1576,6 +1737,36 @@ class DFEILightningModule(L.LightningModule):
                     log.setdefault("chain_weakest_loss", []).append(float(loss["chain_weakest"]))
             except Exception as e:
                 print(f"[chain_weakest] WARN: {type(e).__name__}: {e}")
+        # ==== [2026-10-13] 方向1: 全局划分损失 (传递性 / 排他性 / 集合F1) ====
+        # 见顶部的 part_trans_loss / part_excl_loss / part_f1_loss 与 __init__ 同名说明。
+        # 三项共用 tt 边剪枝 logits (与 edge_prune/chain_weakest 同一输出, 行序 = tt.edge_index)。
+        # 缺省三 w 全 0 -> 整段不执行, 与旧行为逐位一致; 权重在下方组合处统一乘 (只乘一次)。
+        if mode == "train" and (self.part_trans_w > 0 or self.part_excl_w > 0 or self.part_f1_w > 0):
+            try:
+                _pt = batch[('tracks', 'to', 'tracks')]
+                _pt_logits = self.model._blocks[-1].edge_logits[
+                    ('tracks', 'to', 'tracks')].reshape(-1)
+                _pt_n = batch['tracks'].x.shape[0]
+                _pt_ev = (batch['tracks'].batch if 'batch' in batch['tracks']
+                          else torch.zeros(_pt_n, dtype=torch.long, device=_pt_logits.device))
+                if self.part_trans_w > 0:
+                    _ltr = part_trans_loss(_pt_logits, _pt.y, _pt.edge_index, _pt_n)
+                    if _ltr is not None:
+                        loss["part_trans"] = _ltr
+                        log.setdefault("part_trans_loss", []).append(float(_ltr))
+                if self.part_excl_w > 0:
+                    _lex = part_excl_loss(_pt_logits, _pt.y, _pt.edge_index, _pt_n,
+                                          tau=self.part_excl_tau)
+                    if _lex is not None:
+                        loss["part_excl"] = _lex
+                        log.setdefault("part_excl_loss", []).append(float(_lex))
+                if self.part_f1_w > 0:
+                    _lf1 = part_f1_loss(_pt_logits, _pt.y, _pt.edge_index, _pt_n, _pt_ev)
+                    if _lf1 is not None:
+                        loss["part_f1"] = _lf1
+                        log.setdefault("part_f1_loss", []).append(float(_lf1))
+            except Exception as e:
+                print(f"[part] WARN: {type(e).__name__}: {e}")
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:
@@ -1598,6 +1789,13 @@ class DFEILightningModule(L.LightningModule):
         # [2026-10-09] 最弱环链级存活损失 (chain_weakest): 原始值在 loss dict 中, 此处统一乘权重
         if self.chain_weakest_w > 0 and "chain_weakest" in loss:
             combined_loss = combined_loss + self.chain_weakest_w * loss["chain_weakest"]
+        # [2026-10-13] 方向1: 全局划分损失 (part_*): 原始值在 loss dict 中, 此处统一乘权重 (只乘一次)
+        if self.part_trans_w > 0 and "part_trans" in loss:
+            combined_loss = combined_loss + self.part_trans_w * loss["part_trans"]
+        if self.part_excl_w > 0 and "part_excl" in loss:
+            combined_loss = combined_loss + self.part_excl_w * loss["part_excl"]
+        if self.part_f1_w > 0 and "part_f1" in loss:
+            combined_loss = combined_loss + self.part_f1_w * loss["part_f1"]
 
         # 极端防御: 组合 loss 仍非有限或异常巨大时, 置为 0 损失, 避免梯度爆炸污染训练
         if not torch.isfinite(combined_loss) or combined_loss > 1e5:

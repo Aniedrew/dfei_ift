@@ -500,6 +500,56 @@ VARIANTS["v674"] = _v654_plus(
 VARIANTS["v675"] = _v654_plus(epochs=120, tag="v675_ep120")
                               # 训练 60->120 轮 (patience 仍 20): 是否欠训练
 
+# ============================================================================
+# 2026-10-13 方向1: 全局划分损失 (partition loss) —— 传递性 / 排他性 / 集合F1
+#
+# 底子 = v654 (同上, 全部键逐键继承)。已定结论: 把"整条真值链一失毁全"的 AND 语义写进
+#   损失 (chain_recall 的链内最弱环) 是目前唯一大幅有效的改动 (3000 事件: 整链完整恢复
+#   35.8% -> 52.3%)。但它**只罚链内最弱环节**, 缺另一半: 现有架构是"逐边二分类 + 取连通
+#   分量", 没有任何东西保证**划分一致性** (一条径迹可同时属于两条链 / 跨链假边可两个都判
+#   高分)。本方向把"划分一致性"写进损失, 三项 (都实现在 dfei_lightning_module.py):
+#     part_trans_w (1a) 传递性: 真值同链共用一个节点的两条边 -> 第三边(闭合环)也必须高分;
+#        罚 relu(min(p_e1,p_e2)-p_e3)。
+#     part_excl_w  (1b) 排他性: 一条径迹的存活质量不应分散到多条不同真值链;
+#        罚 Σ_v(1-Σ_g m_g²), 非真值伙伴归 -1 组。
+#     part_f1_w    (1c) 集合 F1: 事件级 prec/rec 的调和平均 (尺度无关的集合重叠, 取代逐边平均);
+#        罚 1-f1。
+#   缺省三 w 全 0 -> 与 v654 逐位一致 (已在单测 + 真实 CPU 冒烟验证)。
+#
+# 命名: 本方向统一用 part 前缀 (不用 v6xx, 避免与既有版本号视觉混淆); log_version 从 701 起。
+# 实现: 由 _part(**over) 从 _v654_plus 派生 -> 除新开的 1~2 个键外与 v654 逐键一致;
+#       log_version/tag 也在此注入。
+# ============================================================================
+_PART_BASE = 700
+
+
+def _part(slug, log_version, **over):
+    """以 v654 全部键为基, 追加本方向的新开关 (part_*) 与 tag/log_version。
+
+    slug/log_version 生成描述性 tag (如 part_trans_701) 与 settings.log_version;
+    除 over 中列出的键外与 v654 逐键一致 -> 干净的单/双变量对照。
+    """
+    d = _v654_plus(**over)
+    d["tag"] = f"part_{slug}_{log_version}"
+    d["log_version"] = log_version
+    return d
+
+
+# ---- 单项臂: 三个损失各自单独打开 (w=1 起, 与 chain_recall 5 同量级但属独立信号) ----
+# 预期测: "划分一致性"的哪一半 (传递 / 排他 / 集合重叠) 单独就有效。
+VARIANTS["part_trans"] = _part("trans", 701, part_trans_w=1.0)
+VARIANTS["part_excl"] = _part("excl", 702, part_excl_w=1.0)
+VARIANTS["part_f1"] = _part("f1", 703, part_f1_w=1.0)
+# ---- 组合臂: 三项同开 (w=1 起), 检验互补性 ----
+# 预期测: 三个信号叠加是否 > 任一单项 (它们罚的是不同的划分失配)。
+VARIANTS["part_all"] = _part("all", 704, part_trans_w=1.0, part_excl_w=1.0, part_f1_w=1.0)
+# ---- 权重档: 三项同开 w=3 ----
+# 预期测: w=1 是否过弱 (对照 chain_recall 的 5 量级), 或叠加后是否开始伤边级 AP。
+VARIANTS["part_all_w3"] = _part("allw3", 705, part_trans_w=3.0, part_excl_w=3.0, part_f1_w=3.0)
+# ---- 排他性温度档: 只开排他性, tau=0.3 (更锐: 归一化前概率更接近 0/1) ----
+# 预期测: 排他性的"质量集中度"对温度是否敏感 (tau<1 更接近硬分配)。
+VARIANTS["part_excl_tau03"] = _part("excltau03", 706, part_excl_w=1.0, part_excl_tau=0.3)
+
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
                 "normalization_dict.pt")   # 0904 生产用的归一化字典 (delta_z0 的 center/scale)
 
@@ -513,7 +563,8 @@ def main():
     for ver in a.versions:
         v = VARIANTS[ver]
         c = copy.deepcopy(base)
-        num = int(ver[1:])
+        # 版本号: 既有臂由名字 (v654 -> 654) 推出; 方向1 的 part_* 臂名非数字 -> 用显式 log_version
+        num = v.get("log_version") or int(ver[1:])
         c["settings"]["model"] = num
         c["DFEI"]["cpt"] = INIT                     # 从 v601 权重出发 (不恢复 optimizer)
         c["settings"]["epochs"] = v["epochs"]
@@ -559,7 +610,12 @@ def main():
                        ("chain_lca_loss_weight", "chain_lca_loss_weight"),
                        ("pv_asso_weight", "pv_asso_weight"),
                        # [2026-10-01] 竞争/排他性上下文特征
-                       ("derived_comp", "derived_comp")]:
+                       ("derived_comp", "derived_comp"),
+                       # [2026-10-13] 方向1: 全局划分损失 (传递性/排他性/集合F1)
+                       ("part_trans_w", "part_trans_w"),
+                       ("part_excl_w", "part_excl_w"),
+                       ("part_excl_tau", "part_excl_tau"),
+                       ("part_f1_w", "part_f1_w")]:
             if k in v:
                 c["inference"][key] = v[k]
         if v.get("dz_dict"):
