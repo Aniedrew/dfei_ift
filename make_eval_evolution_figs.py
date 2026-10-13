@@ -1,9 +1,10 @@
-"""画"各 benchmark 随版本演变"的 7 张多面板图 (matplotlib Agg, DPI>=200, 英文标签).
+"""画"各 benchmark 随版本演变"的 8 张多面板图 (matplotlib Agg, DPI>=200, 英文标签).
 
 输入: report_figs/eval_matrix_all_versions.csv (由 build_eval_matrix.py 生成)
-输出: report_figs/eval_evolution/E1..E7_*.png
+输出: report_figs/eval_evolution/E1..E8_*.png
 
 口径与数据说明全部写在图内 (轴标签 / 图例 / 标题); 缺口留空不连线; 三个断点画竖线.
+[2026-10-13] E3/E6 里加入 0702 老版本的"跨数据集"新 bench 点 (brown), 新增 E8 论文冠军对照.
 用法: export PATH=$HOME/miniconda3/envs/dfei/bin:$PATH; python make_eval_evolution_figs.py
 """
 import os
@@ -140,8 +141,12 @@ def E3(df, pos):
     styles = {200: dict(marker="o", color="#1f77b4"),
               500: dict(marker="s", color="#ff7f0e"),
               3000: dict(marker="^", color="#2ca02c")}
+    # [2026-10-13] 0702 老版本 = CROSS-DATASET: model trained on 0702 (leaky),
+    #   evaluated on the 0904 (fixed) test set. 用独立 marker/线型单独画, 不与 0904 同数据集曲线相连.
+    XDS_C = "#8c564b"
     haveb = df[df[[f"ap_hardpool_{e}" for e in (200, 500, 3000)]].notna().any(axis=1)]
     xlo, xhi = int(haveb["idx"].min()) - 2, int(haveb["idx"].max()) + 2
+    xds = df[df["dataset"] == 702]
     for ax, (vbase, ylab) in zip(axes, [("ap_hardpool", "hard-pool AP (threshold-free)"),
                                         ("chain_surv", "chain survival [%] (thr = 0.9)")]):
         any_ = False
@@ -149,7 +154,8 @@ def E3(df, pos):
             vc = f"{vbase}_{ev}"
             if vc not in df:
                 continue
-            d = df[df[vc].notna()]
+            # 0904 同数据集版本 (排除 cross-dataset 老版本, 它们单独画)
+            d = df[df[vc].notna() & (df["dataset"] != 702)]
             if not len(d):
                 continue
             yerr_v = None
@@ -160,6 +166,16 @@ def E3(df, pos):
             ax.errorbar(d["idx"], d[vc], yerr=yerr_v, fmt=st["marker"] + "-", ms=5, lw=1.2,
                         capsize=2, color=st["color"], label=f"{ev} events")
             any_ = True
+        # cross-dataset 老版本 (0702-trained, 0904-evaluated): 棕色 X, 不连线
+        dx = xds[xds[f"{vbase}_3000"].notna()] if f"{vbase}_3000" in df else xds.iloc[0:0]
+        if len(dx):
+            ax.plot(dx["idx"], dx[f"{vbase}_3000"], "X", ms=9, mfc="none", mec=XDS_C, mew=1.8,
+                    ls="none", color=XDS_C,
+                    label="cross-dataset: trained 0702(leaky) -> tested 0904(fixed)")
+            for _, r in dx.iterrows():
+                ax.text(int(r["idx"]), r[f"{vbase}_3000"], f"v{int(r['version'])}",
+                        fontsize=7, color=XDS_C, ha="center", va="bottom")
+            any_ = True
         add_breakpoints(ax, df, pos, label=(ax is axes[0]))
         ax.set_ylabel(ylab)
         ax.grid(alpha=0.25)
@@ -167,8 +183,9 @@ def E3(df, pos):
         if not any_:
             ax.text(0.3, 0.5, "no data", transform=ax.transAxes)
     axes[0].set_title("E3  New (threshold-free) benchmark vs version - event counts are DIFFERENT rulers, "
-                      "so never connect across event-count tiers (different markers)")
-    axes[0].legend(loc="lower right", fontsize=9)
+                      "so never connect across event-count tiers (different markers).\n"
+                      "(brown X = 0702-era models re-scored on the 0904 test set = cross-dataset, not comparable)")
+    axes[0].legend(loc="lower right", fontsize=8)
     axes[1].set_xlabel("training version (chronological by completion date)")
     deco_xaxis(axes[1], df)
     fig.tight_layout()
@@ -224,17 +241,25 @@ def E5(df, pos):
 
 
 def E6(df, pos):
-    """slope / dumbbell: 同一批版本在三把尺子下的排名是否一致."""
-    d = df[(df["all_particles"].notna()) & (df["ap_hardpool_200"].notna() | df["ap_hardpool_500"].notna())].copy()
-    # 新 bench 用 500 档优先, 否则 200 档
-    ap = []
-    cs = []
-    for _, r in d.iterrows():
-        a = r["ap_hardpool_500"] if pd.notna(r["ap_hardpool_500"]) else r["ap_hardpool_200"]
-        c = r["chain_surv_500"] if pd.notna(r["chain_surv_500"]) else r["chain_surv_200"]
-        ap.append(a); cs.append(c)
-    d["r_new_ap"] = ap
-    d["r_new_cs"] = cs
+    """slope / dumbbell: 同一批版本在三把尺子下的排名是否一致.
+
+    [2026-10-13] 纳入 0702 老版本 (cross-dataset): 它们的"旧 all_particles"来自 0702 测试集
+    (leaky), "新 bench"来自 0904 测试集 -> 棕色虚线单独标出, 排名不可与 0904 版本直接横比.
+    新 bench 档位优先 3000 (统计功效最高) -> 500 -> 200.
+    """
+    def _pick(r, base):
+        for ev in (3000, 500, 200):
+            c = f"{base}_{ev}"
+            if c in r.index and pd.notna(r[c]):
+                return r[c]
+        return np.nan
+
+    d = df[(df["all_particles"].notna()) & (
+        df[[f"ap_hardpool_{e}" for e in (200, 500, 3000)]].notna().any(axis=1))].copy()
+    d["r_new_ap"] = d.apply(lambda r: _pick(r, "ap_hardpool"), axis=1)
+    d["r_new_cs"] = d.apply(lambda r: _pick(r, "chain_surv"), axis=1)
+    d["is_xds"] = d["dataset"] == 702
+    d = d[d["r_new_ap"].notna()]
 
     rulers = [("old\nall_particles", "all_particles", "#1f77b4"),
               ("new\nap_hardpool", "r_new_ap", "#ff7f0e"),
@@ -249,26 +274,112 @@ def E6(df, pos):
     for _, r in d.iterrows():
         v = int(r["version"])
         ys = [ranks[col][v] for _, col, _ in rulers]
-        hl = v in (623, 632, 633, 648, 654)
-        ax.plot(xs, ys, "-o", ms=5, lw=2.2 if hl else 0.7,
-                alpha=0.95 if hl else 0.4,
-                color="#000000" if hl else "#888888",
-                zorder=3 if hl else 1)
+        xds = bool(r["is_xds"])
+        hl = (not xds) and v in (623, 632, 633, 648, 654)
+        ax.plot(xs, ys, "--" if xds else "-", marker="o", ms=5,
+                lw=2.0 if xds else (2.2 if hl else 0.7),
+                alpha=0.9 if xds else (0.95 if hl else 0.4),
+                color="#8c564b" if xds else ("#000000" if hl else "#888888"),
+                zorder=3 if (hl or xds) else 1)
         ax.text(-0.06, ys[0], f"v{v}", ha="right", va="center", fontsize=8.5,
-                color="k" if hl else "0.4")
-        ax.text(2.06, ys[2], f"v{v}", ha="left", va="center", fontsize=8.5, color="0.4")
+                color="#8c564b" if xds else ("k" if hl else "0.4"))
+        ax.text(2.06, ys[2], f"v{v}", ha="left", va="center", fontsize=8.5,
+                color="#8c564b" if xds else "0.4")
     ax.set_xticks(xs); ax.set_xticklabels([nm for nm, _c, _col in rulers], fontsize=12)
     ax.set_ylabel("rank within the common set (1 = best under that ruler)")
     ax.set_xlim(-0.5, 2.5)
     ax.invert_yaxis()
     ax.set_title("E6  Ruler divergence: same versions, three rulers - do the rankings agree?\n"
                  "Straight parallel lines = agreement; crossings = the ruler decides the winner. "
+                 "brown dashed = 0702-era model re-scored on 0904 = cross-dataset (see report). "
                  "(strict end-to-end chain_full exists only for v654 -> not rankable, see report)")
+    from matplotlib.lines import Line2D
+    ax.legend(handles=[
+        Line2D([0], [0], color="#000000", lw=2.2, marker="o", label="0904 same-dataset (highlighted)"),
+        Line2D([0], [0], color="#888888", lw=0.7, marker="o", label="0904 same-dataset"),
+        Line2D([0], [0], color="#8c564b", lw=2.0, ls="--", marker="o",
+               label="0702 cross-dataset (trained 0702, tested 0904)"),
+    ], loc="lower right", fontsize=9)
     for i in range(3):
         ax.axvline(i, color="0.85", zorder=0)
     ax.grid(alpha=0.2, axis="y")
     fig.tight_layout()
     fig.savefig(os.path.join(OUTDIR, "E6_ruler_divergence.png")); plt.close(fig)
+
+
+def E8(df, pos):
+    """论文期冠军 (0702 线) 的 "旧尺子 vs 新尺子" 双面板对照.
+
+    [2026-10-13] CROSS-DATASET: 这些模型训练于 0702 (leaky), 新 bench 评于 0904 (fixed).
+    左面板 = 旧 benchmark all_particles (0702 测试集, 论文口径);
+    右面板 = 新 benchmark ap_hardpool / chain_surv (0904 测试集).
+    v27/v60 因特征维度不兼容 (node 10 vs 8, edge 4 vs 5) 无法用新 bench 评测, 只在左面板出现.
+    """
+    champs = [27, 31, 38, 47, 60, 557]
+    d = df[df["version"].isin(champs)].sort_values("version").copy()
+
+    def _pick(r, base):
+        for ev in (3000, 500, 200):
+            c = f"{base}_{ev}"
+            if c in r.index and pd.notna(r[c]):
+                return r[c], ev
+        return np.nan, None
+
+    apv, csv_, evv = [], [], []
+    for _, r in d.iterrows():
+        a, e = _pick(r, "ap_hardpool")
+        c, _ = _pick(r, "chain_surv")
+        apv.append(a); csv_.append(c); evv.append(e)
+    d["new_ap"], d["new_cs"], d["new_ev"] = apv, csv_, evv
+    d_old = d[d["all_particles"].notna()]
+    d_new = d[d["new_ap"].notna()]
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.4))
+    # ---- panel A: OLD ruler (all_particles, 0702 test) ----
+    ax = axes[0]
+    x = np.arange(len(d_old))
+    ax.bar(x, d_old["all_particles"], color="#1f77b4", alpha=0.85)
+    for i, (_, r) in enumerate(d_old.iterrows()):
+        has_new = pd.notna(r["new_ap"])
+        ax.text(i, r["all_particles"] + 1, f"{r['all_particles']:.1f}", ha="center", fontsize=9)
+        ax.text(i, -6.5, f"v{int(r['version'])}" + ("" if has_new else "\n(no new-bench)"),
+                ha="center", fontsize=8.5, color="k")
+    ax.set_xticks(x); ax.set_xticklabels([])
+    ax.set_ylim(0, max(105, float(d_old["all_particles"].max()) * 1.15))
+    ax.set_ylabel("OLD ruler: all_particles [%]  (0702 test set, paper protocol)")
+    ax.set_title("E8a  Paper-era champions (0702 line) - OLD ruler\n"
+                 "all_particles on the leaky 0702 test set")
+    ax.grid(alpha=0.25, axis="y")
+    # ---- panel B: NEW ruler (ap_hardpool / chain_surv, 0904 test) ----
+    ax = axes[1]
+    yn = np.arange(len(d_new))
+    ax.bar(yn, d_new["new_ap"], width=0.55, color="#ff7f0e", alpha=0.85,
+           label="new ap_hardpool (threshold-free)")
+    for i, (_, r) in enumerate(d_new.iterrows()):
+        ax.text(i, r["new_ap"] + 0.008, f"{r['new_ap']:.3f}", ha="center", fontsize=8.5)
+    ax.set_ylim(0, 1.0)
+    ax.set_ylabel("new benchmark: ap_hardpool (threshold-free)")
+    ax2 = ax.twinx()
+    ax2.plot(yn, d_new["new_cs"], "s--", color="#2ca02c", ms=8, lw=1.5,
+             label="new chain_surv [%] (thr 0.9)")
+    for i, (_, r) in enumerate(d_new.iterrows()):
+        ax2.text(i, r["new_cs"] + 1.2, f"{r['new_cs']:.1f}%", ha="center", fontsize=8.5, color="#2ca02c")
+    ax2.set_ylim(0, max(60, float(d_new["new_cs"].max()) * 1.25))
+    ax2.set_ylabel("new benchmark: chain_surv [%] (thr 0.9)")
+    ax.set_xticks(yn)
+    ax.set_xticklabels([f"v{int(r['version'])}\nN={int(r['new_ev'])}" for _, r in d_new.iterrows()],
+                       fontsize=8.5)
+    ax.set_title("E8b  Same champions - NEW ruler (0904 test set)\n"
+                 "CROSS-DATASET: trained 0702 (leaky), evaluated on 0904 (fixed)")
+    ax.grid(alpha=0.25, axis="y")
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=9)
+    ax.text(0.5, -0.24, "v27/v60 not evaluable under the new bench (FeatureDim mismatch, "
+                        "node 10 vs 8 / edge 4 vs 5). Numbers are not comparable across panels.",
+            transform=ax.transAxes, ha="center", fontsize=8.5, color="0.3")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUTDIR, "E8_paper_champions_under_new_ruler.png")); plt.close(fig)
 
 
 def E7(df, pos):
@@ -294,7 +405,7 @@ def main():
     pos = bp_positions(df)
     print("breakpoint x positions:", pos)
     E1(df, pos); E2(df, pos); E3(df, pos); E4(df, pos)
-    E5(df, pos); E6(df, pos); E7(df, pos)
+    E5(df, pos); E6(df, pos); E7(df, pos); E8(df, pos)
     print("wrote figures to", OUTDIR)
 
 

@@ -212,3 +212,102 @@ Legend: ✅ directly comparable · ⚠️ comparable only under the stated condi
    number may mix two working points.
 5. **`trdist` random-axis projection** — numerically rotation-invariant (so deterministic and safe,
    per `docs/feature_ceiling_analysis.md` §3.5), but I did not re-run the check myself.
+
+---
+
+## 10. APPENDIX — Re-scoring the 0702 line under the new (v3) benchmark (2026-10-13)
+
+> Append-only section; it does not change §0–§9. It records the first time the new threshold-free
+> benchmark (R2) was pointed at the **0702-era** models, and the correct reading of the results.
+> Produced by `analyze_prune_loss.py --config config_files/eval_bench_v3_n90.yaml --events 3000`
+> (same `--version/--tag` plumbing as `submit_bench_v3.sh`); rows appended to
+> `report_figs/bench_auc_v3_seed.csv` (subset also in `report_figs/bench_auc_v3_0702_cross.csv`).
+
+### 10.1 What was run, and the cross-dataset label (mandatory)
+
+Every number below is **cross-dataset: model trained on 0702 (leaky), evaluated on 0904 (fixed).**
+The checkpoint was trained on `DFEI_IFT_20260702` (test set `00342442`, carrying the `delta_z0` order
+leak, §7/B1); the v3 benchmark always runs on the **0904** test split (`inclusive_00342451`,
+`data_seed=0`, `nfiles=20`, `thr=0.9`, inputs normalised with the **0904** `normalization_dict.pt`).
+So these rows measure "a leaky-trained model applied to the fixed test set", not a within-dataset number.
+
+### 10.2 How to read the R2 columns in the cross-dataset regime
+
+| column | correct reading here | not comparable with |
+|---|---|---|
+| `ap_hardpool` / `p_at_r90_hardpool` | 0702 model's edge-score ranking quality **on 0904 hard-pool edges**. The absolute value (~0.54–0.55) is depressed by both the leak-trained representation and the 0702→0904 graph-population shift. | any 0904 same-dataset `ap_hardpool` (~0.63–0.67); any 0702 `all_particles` |
+| `chain_surv` / `chain_surv_2/3/4` | fraction of 0904 truth chains whose tracks **and** true structural edges all pass `thr=0.9`; here 0.4–4.6 % (vs 32–71 % for 0904 same-dataset). NB `chain_surv` is a pruning-layer **upper bound** (§4). | any 0904 same-dataset `chain_surv`; anything on 0702 |
+| `per_link_p_2` | implied single-link survival from `chain_surv_2`; **relative** diagnostic only | across datasets |
+| `events` | all 0702 rows at **3000 events** (same tier as the 0904 versions added in §10.4) | 200/500 tiers |
+
+Honest statement: these numbers say *how a 0702-trained model behaves on the fixed 0904 test set*, and
+are used only to ask "does the paper-era ranking survive a change of ruler + dataset?".
+
+### 10.3 Compatibility issues encountered (version → error → shim)
+
+Loading path: `adjust_config_evaluation` reads each version's `input_config.yaml` as the architecture
+baseline, then overlays only `settings/inference/evaluate`. The model class has since gained
+`extra_node_dim`/`extra_edge_dim`/`derived_*`/`line_graph`/`geom_keep`, so each old checkpoint was retested:
+
+| version | result | error (if any) | shim added |
+|---|---|---|---|
+| **v31, v38, v47, v557, v559, v561, v565** | ✅ ran | — | **none** |
+| **v27, v60** | ❌ not evaluable | `RuntimeError: mat1 and mat2 shapes cannot be multiplied (Nx8 and 10x128)` at `hetero_graphcoder.py:45` (tracks node model), first forward | **none — deliberately** |
+
+- **No shims were added anywhere.** The 7 good versions load unchanged (`use_pid:'true'` → the pipeline
+  concats the 5-col `tracks.pid` → 13 node features, matching their ckpt; tt edges 5-wide, matching).
+- **v27/v60 = genuine FeatureDim/era mismatch, not a missing config default.** Their ckpts expect
+  tracks-node input **10** and tt-edge input **4**; the current 0904 pipeline gives **8** / **5**. They
+  trained on the older `DFEI_data/converted_LHCbcollision` layout (`use_pid` unset). Fixing needs model
+  code changes (out of scope); a "`use_pid='true'`" stop-gap would append the new pid block to an old
+  feature vector and give silently wrong numbers. Hence **"not evaluable"**, not back-filled.
+
+### 10.4 Paper champions vs the new ruler (3000 events, cross-dataset)
+
+`all_particles` = old (leaky, 0702-test) ruler from the matrix; `ap_hardpool`/`chain_surv` = new ruler
+on 0904. All new-ruler rows: **3000 events, thr 0.9, cross-dataset = yes**.
+
+| version | all_particles [%] (0702) | ap_hardpool (0904) | p@r90_hardpool | chain_surv [%] | per_link_p_2 | events | cross-dataset |
+|---|---|---|---|---|---|---|---|
+| v27 | 92.30 | — (not evaluable) | — | — | — | — | yes |
+| v60 | 92.93 | — (not evaluable) | — | — | — | — | yes |
+| v31 | 40.45 | 0.5504 | 0.5224 | 4.57 | 0.2940 | 3000 | yes |
+| v38 | 52.13 | 0.5509 | 0.5229 | 2.28 | 0.2079 | 3000 | yes |
+| v47 | 55.86 | 0.5500 | 0.5231 | 2.33 | 0.2162 | 3000 | yes |
+| v557 | 57.18 | 0.5471 | 0.5219 | 1.27 | 0.1324 | 3000 | yes |
+| v559 | 56.86 | 0.5470 | 0.5236 | 2.64 | 0.2162 | 3000 | yes |
+| v561 | 51.52 | 0.5546 | 0.5222 | 4.26 | 0.2777 | 3000 | yes |
+| v565 | 53.28 | 0.5492 | 0.5235 | 0.41 | 0.0764 | 3000 | yes |
+
+Context: the 0904 same-dataset 3000-event rows (added here) sit at **ap_hardpool 0.636–0.668,
+chain_surv 32–71 %** (v601/623/628/631/632/633/637/641/642/643/645/646/648/649/651/652/653/654/655).
+
+### 10.5 Ranking conclusions (E6 / E8)
+
+Common set = versions with both `all_particles` and a new-ruler value (now includes the 7 evaluable
+0702 versions). **N = 31; N = 7 cross-dataset.** With the figure's convention (rank 1 = worst):
+
+- **Old ruler:** the 7 cross-dataset versions sit at ranks **16, 22, 23, 26, 27, 29, 30** — v557 is the
+  **2nd-best of all 31** by the leaky `all_particles`.
+- **New ruler (`ap_hardpool`):** the same 7 occupy ranks **1,2,3,4,5,6,7** — the **entire bottom seven**;
+  every 0904 same-dataset version beats every 0702 cross-dataset version.
+- **New ruler (`chain_surv`):** again ranks **1,2,3,4,5,6,7** (bottom seven).
+- **v557**: 2nd-best (old) → 2nd-worst (new ap AND new chain_surv). **v31**: 16th (old) → 5th (new ap).
+  The ranking is essentially **reversed/scrambled** by the ruler change.
+
+**E8** (`E8_paper_champions_under_new_ruler.png`): of the listed paper-era champions only v31/v38/v47/v557
+are evaluable (v27/v60 fail, §10.3). Their old-ruler spread (40–57 %) collapses to a flat new-ruler band
+(`ap_hardpool` 0.547–0.551, `chain_surv` 1.3–4.6 %), far below the 0904 same-dataset band.
+
+### 10.6 Caveats / conflicts found
+
+1. **Cross-dataset, twice over.** For the 0702 rows the two rulers are on **different test sets**
+   (old 0702/`00342442`; new 0904/`00342451`), so part of the gap is genuine dataset shift (the §2 minIP
+   baseline itself moves 12.70 → 10.15 across the switch). The *direction* (paper winners → bottom of the
+   honest ruler) is robust; the *magnitude* must not be attributed to the leak alone.
+2. **Mixed tiers inside E6.** E6 prefers 3000 → 500 → 200 per version; a few versions still only have
+   500/200. Tiers are different rulers (§4) — only the large rank moves should be interpreted.
+3. **v27/v60 look "best" on the old ruler (92 %)** yet are exactly the versions that cannot be evaluated
+   at all on the new ruler. The two highest paper numbers are also the two least verifiable.
+4. **Old `all_particles` is leaky and denominator-unfixed** (§1a defect 1) — the 40–57 % band needs
+   `All_fix` before it means anything; only the *relative* reshuffle is claimed here.

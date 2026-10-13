@@ -223,16 +223,37 @@ def cross_break(version, dataset):
     return "+".join(hits) if hits else ""
 
 
+def _row_version(r):
+    """稳健取版本号: 优先 version 列, 缺失时从 tag 里的 v<num> 反查."""
+    v = r.get("version")
+    if v is not None and not pd.isna(v):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            pass
+    m = re.search(r"v(\d+)", str(r.get("tag", "")))
+    return int(m.group(1)) if m else None
+
+
 def load_bench():
-    """bench_auc_v3_seed.csv -> {version(str): {events(int): row-dict}} (去重)."""
+    """bench_auc_v3_seed.csv -> {version(str): {events(int): row-dict}} (去重).
+
+    [2026-10-13] version 列可能为空 -> 用 tag 里的 v<num> 反查 (见 _row_version).
+    """
     out = {}
     if not os.path.exists(BENCH):
         return out
     df = pd.read_csv(BENCH)
     df = df.drop_duplicates(subset=["tag", "version", "events"], keep="first")
     for _, r in df.iterrows():
-        ev = int(r["events"])
-        out.setdefault(str(int(r["version"])), {})[ev] = r
+        v = _row_version(r)
+        if v is None:
+            continue
+        try:
+            ev = int(r["events"])
+        except (TypeError, ValueError):
+            continue
+        out.setdefault(str(v), {})[ev] = r
     return out
 
 
