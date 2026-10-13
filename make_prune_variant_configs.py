@@ -657,6 +657,68 @@ VARIANTS["seqrec_trainonly"] = _seqrec("trainonly", 904,
                                        seqrec_cut=0.02, seqrec_cut_learn=True,
                                        seqrec_loss_weight=1.0)
 
+# ============================================================================
+# 2026-10-13 方向2: 集合预测头 (set prediction: slot + mask + 匈牙利匹配)
+#
+# 问题: 现在下游是"逐对四分类 + 取连通分量/组装", **从不显式回答**"这个事件里有几条链、
+#   每条链含哪些径迹"。多 B 事件的失效模式正来自这里 —— 边分类只看"这一对像不像同一条链",
+#   没有对"到底几条链、哪条链归哪些径迹"做全局、排他的决策。
+# 本方向换范式 (DETR / MaskFormer 式): 头部一次输出 K 个"链槽位", 每个槽位给出
+#   (i) 存在性 (该槽位是不是一条链) 与 (ii) 对每条径迹的归属 mask; 训练用匈牙利匹配把
+#   预测槽位与真值链一一对齐 -> 天然表达"链数"与"每条径迹只属于一条链"。
+#
+# 实现 (wmpgnn/model/set_pred_head.py + dfei_lightning_module / reconstruction):
+#   - pair-wise: 槽位 query 与 tt 边表征 cross-attention, 再把边信息按端点聚合回径迹;
+#     mask 头输入显式含两端表征 [h_t, c_k, edgeAgg, h_t*c_k] (不是只对节点表征池化);
+#   - 归属归一化 setpred_assign: "softmax_bg"(默认, 逐径迹 softmax 到 K 槽位+背景 -> 天然排他)
+#     | "sigmoid"(逐 (径迹,槽位) 独立, 排他靠推理 argmax);
+#   - 匹配代价 = -exist_prob + (1 - Dice), scipy linear_sum_assignment (逐事件, CPU);
+#   - 开启键: setpred_use(总开关) / setpred_nslots(K) / setpred_loss_w(损失权重) /
+#     setpred_dustbin_w(未匹配槽位"无对象"项权重) / setpred_decode(推理用槽位解码取代连通分量);
+#     全关时与 v654 逐位一致 (单测 + CPU 冒烟已核对)。
+#
+# K 的选取: 统计真实训练数据每事件真值链数 -> 0/1/2/3 链 = 43.4/38.6/17.9/0.13%,
+#   均值 0.748, P99=2, P100=3 -> K=4 覆盖全部并留头程 (setpred_k4); K=8 作更宽对照。
+#
+# 命名: 统一 setpred 前缀; log_version 从 801 起; 生成用 _setpred(**over) 从 _v654_plus 派生
+#   -> 除新开的键外与 v654 逐键一致 (干净的单/双变量对照)。
+# ============================================================================
+_SETPRED_BASE = 800
+
+
+def _setpred(slug, log_version, **over):
+    """以 v654 全部键为基, 追加本方向的新开关 (setpred_*) 与 tag/log_version。
+
+    除 over 中列出的键外与 v654 逐键一致 -> 干净对照; 生成后逐一 diff 复核。
+    """
+    d = _v654_plus(**over)
+    d["tag"] = f"setpred_{slug}_{log_version}"
+    d["log_version"] = log_version
+    return d
+
+
+_COMMON_SP = dict(setpred_use=True, setpred_loss_w=1.0,
+                  setpred_exist_thr=0.5, setpred_assign_thr=0.5)
+# ---- v801: K=4 槽位 (覆盖 P99, 实测 P100=3) —— 主力臂 ----
+VARIANTS["setpred_k4"] = _setpred("k4", 801, setpred_nslots=4,
+                                  setpred_assign="softmax_bg", **_COMMON_SP)
+# ---- v802: K=8 槽位 (更宽; 看链数上界是否受限) ----
+VARIANTS["setpred_k8"] = _setpred("k8", 802, setpred_nslots=8,
+                                  setpred_assign="softmax_bg", **_COMMON_SP)
+# ---- v803: K=4 + setpred_decode (推理直接用槽位解码**取代**连通分量) ----
+VARIANTS["setpred_decode"] = _setpred("decode", 803, setpred_nslots=4,
+                                      setpred_assign="softmax_bg",
+                                      setpred_decode=True, **_COMMON_SP)
+# ---- v804: K=4 + 损失权重 ×3 (w=1 是否欠训) ----
+VARIANTS["setpred_w3"] = _setpred("w3", 804, setpred_nslots=4,
+                                  setpred_assign="softmax_bg",
+                                  setpred_use=True, setpred_loss_w=3.0,
+                                  setpred_exist_thr=0.5, setpred_assign_thr=0.5)
+# ---- v805: 对照臂 —— 故意把 mask 建在**节点池化**上 (丢弃成对/边信息), 量化"成对表示"的必要性 ----
+VARIANTS["setpred_node_mask"] = _setpred("node_mask", 805, setpred_nslots=4,
+                                         setpred_assign="softmax_bg",
+                                         setpred_pairwise=False, **_COMMON_SP)
+
 
 DZ_DICT_0904 = ("/lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/"
                 "normalization_dict.pt")   # 0904 生产用的归一化字典 (delta_z0 的 center/scale)
@@ -738,7 +800,21 @@ def main():
                        ("seqrec_cut", "seqrec_cut"),
                        ("seqrec_cut_learn", "seqrec_cut_learn"),
                        ("seqrec_linkage", "seqrec_linkage"),
-                       ("seqrec_loss_weight", "seqrec_loss_weight")]:
+                       ("seqrec_loss_weight", "seqrec_loss_weight"),
+                       # [2026-10-13] 方向2: 集合预测头 (DETR 式 slot + mask + 匈牙利匹配)
+                       ("setpred_use", "setpred_use"),
+                       ("setpred_decode", "setpred_decode"),
+                       ("setpred_nslots", "setpred_nslots"),
+                       ("setpred_loss_w", "setpred_loss_w"),
+                       ("setpred_dustbin_w", "setpred_dustbin_w"),
+                       ("setpred_hidden", "setpred_hidden"),
+                       ("setpred_heads", "setpred_heads"),
+                       ("setpred_pairwise", "setpred_pairwise"),
+                       ("setpred_assign", "setpred_assign"),
+                       ("setpred_exist_thr", "setpred_exist_thr"),
+                       ("setpred_assign_thr", "setpred_assign_thr"),
+                       ("setpred_exist_weight", "setpred_exist_weight"),
+                       ("setpred_assign_weight", "setpred_assign_weight")]:
             if k in v:
                 c["inference"][key] = v[k]
         if v.get("dz_dict"):

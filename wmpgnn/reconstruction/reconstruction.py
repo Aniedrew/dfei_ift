@@ -299,6 +299,23 @@ class EventReconstruction:
                 reco_edge_w = edge_weights[tr_tr_mask][edge_mask][edge_selbool]
             graphs[i]._edge_w_reco = reco_edge_w.cpu()
 
+            # ==== [2026-10-13] 方向2: 挂载集合预测头的逐节点标签 (供重建取代连通分量) ====
+            # 标签由 lightning module 按**全图事件节点序**算好存进 outputs.setpred_labels[i];
+            # 这里裁剪到剪枝后保留的节点 (node_selbool 顺序 = 保留节点在事件内的升序),
+            # 使 graph['tracks'] 与标签一一对齐。仅 setpred_decode 时挂载 -> 缺省不执行。
+            if self.configs.get("setpred_decode", False):
+                try:
+                    _sp_all = getattr(outputs, "setpred_labels", None)
+                    if _sp_all is not None and i < len(_sp_all):
+                        _fl = torch.as_tensor(_sp_all[i])
+                        _has_nodesel = node_expand or self.configs.get("node_prune", True)
+                        if _has_nodesel:
+                            graphs[i]._setpred_label = _fl[node_selbool.cpu()].long()
+                        else:
+                            graphs[i]._setpred_label = _fl.long()
+                except Exception as e:
+                    print(f"[setpred] WARN 标签挂载失败: {type(e).__name__}: {e}")
+
             # ==== 方向3: 为 seqrec 解码器挂载 逐边存活概率 p_e 与几何距离 d_geom ====
             # (仅 seqrec_use 时计算; 缺省不执行 -> 逐位不变)
             if self.configs.get("seqrec_use", False) and self._nc:
@@ -537,6 +554,32 @@ class EventReconstruction:
             print(f"[pv_cluster] WARN: {type(e).__name__}: {e} -> 回退全图")
             return _fallback()
 
+    def _reconstruct_setpred(self, graph):
+        """方向2: 用集合预测头给出的 slot 归属 (逐节点单一标签) 取代连通分量。
+
+        标签 `graph._setpred_label` 由 lightning module 解码得到 (存在性>阈值的槽位; 逐径迹
+        argmax 到 K 槽位或背景) -> 天然排他 (每条径迹只属于一个簇)。逐簇调用
+        cluster_chains_from_labels (内部复用 reconstruct_decay) 解析链内结构/顺序。
+        返回 (rc_dict, num_clusters_per_order) —— 与 reconstruct_decay 同构。
+        """
+        import numpy as np
+        import pandas as pd
+        from wmpgnn.reconstruction.sequential_recombine import cluster_chains_from_labels
+
+        n_nodes = graph['tracks'].x.shape[0]
+        particle_keys = get_final_keys(graph).tolist()
+        tt = graph[('tracks', 'to', 'tracks')]
+        ei = tt.edge_index
+        arg = tt.lca.argmax(-1)
+        keep = (arg > 0)
+        cols = {"senders": ei[0][keep].numpy(), "receivers": ei[1][keep].numpy(),
+                "LCA_dec": arg[keep].numpy()}
+        labels = graph._setpred_label.detach().cpu().numpy().astype(int)
+        if labels.shape[0] != n_nodes:
+            labels = np.resize(labels, n_nodes)
+        rc_dict, nclust = cluster_chains_from_labels(labels, pd.DataFrame(cols), particle_keys)
+        return rc_dict, nclust
+
     def _reconstruct_seqrec(self, graph):
         """方向3: 用 sequential recombination (anti-kT 式层次聚类) 取代连通分量。
 
@@ -587,6 +630,11 @@ class EventReconstruction:
             if self.configs.get("pv_cluster", False) and pv_des is not None:
                 # ==== 方案7: PV 分簇分层重建 ====
                 rc_dict, r_nclust_order = self._reconstruct_pv_clustered(graph, pv_des)
+            elif self.configs.get("setpred_decode", False) \
+                    and getattr(graph, "_setpred_label", None) is not None:
+                # ==== 方向2: 用集合预测 (slot 归属) 取代连通分量 ====
+                rc_dict, r_nclust_order = self._reconstruct_setpred(graph)
+                particle_keys = get_final_keys(graph).tolist()
             elif self.configs.get("seqrec_use", False) \
                     and getattr(graph, "_seqrec_p", None) is not None:
                 # ==== 方向3: 用顺序重组合取代连通分量 ====

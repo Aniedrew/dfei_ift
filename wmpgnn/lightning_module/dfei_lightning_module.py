@@ -1010,6 +1010,59 @@ class DFEILightningModule(L.LightningModule):
                   f"cut={self.seqrec_cut}(learn={self.seqrec_cut_learn}) w={self.seqrec_loss_weight}",
                   flush=True)
 
+        # ==== [2026-10-13] 方向2: 集合预测头 (DETR 式: K 槽位 + 归属 mask + 匈牙利匹配) ====
+        # 动机: 当前下游是"逐对四分类 + 取连通分量", 从不显式回答"事件里有几条链、每条链含
+        #   哪些径迹"。集合预测一次性输出 K 个"链槽位": 槽位存在性 + 对每条径迹的归属 mask;
+        #   训练用匈牙利匹配把槽位与真值链一一对齐 -> 天然表达"链数"与"每条径迹只属于一条链",
+        #   并直接对着唯一验收判据 (整链完整恢复) 建模。
+        # pair-wise: 槽位 query 与 tt 边表征 cross-attention 再把边信息聚合回径迹 (不只是节点池化)。
+        # 归属归一化: setpred_assign = "softmax_bg"(默认, 逐径迹 softmax 到 K 槽位+背景 -> 天然排他)
+        #   | "sigmoid"(逐 (径迹,槽位) 独立, 排他靠推理 argmax)。
+        # 缺省 (setpred_use=False, setpred_loss_w=0) -> 整段不执行, 与 v654 逐位一致。
+        # 开启键 (缺省全关时逐位无影响): setpred_use(总开关) / setpred_nslots(K) /
+        #   setpred_loss_w(损失权重) / setpred_dustbin_w(未匹配槽位的"无对象"项权重, 可选) /
+        #   setpred_decode(推理用槽位直接解码取代连通分量, 可选)。
+        # 旧键 setpred_slots / setpred_loss_weight 作为别名兼容。
+        self.setpred_use = bool(self.configs.get("setpred_use", False))
+        self.setpred_decode = bool(self.configs.get("setpred_decode", False))
+        self.setpred_loss_w = float(self.configs.get("setpred_loss_w",
+                                    self.configs.get("setpred_loss_weight", 0.0)))
+        self.setpred_nslots = int(self.configs.get("setpred_nslots",
+                                  self.configs.get("setpred_slots", 8)))
+        self.setpred_dustbin_w = float(self.configs.get("setpred_dustbin_w", 1.0))
+        self.setpred_hidden = int(self.configs.get("setpred_hidden", 64))
+        self.setpred_heads = int(self.configs.get("setpred_heads", 4))
+        self.setpred_pairwise = bool(self.configs.get("setpred_pairwise", True))
+        self.setpred_assign = self.configs.get("setpred_assign", "softmax_bg")
+        self.setpred_exist_thr = float(self.configs.get("setpred_exist_thr", 0.5))
+        self.setpred_assign_thr = float(self.configs.get("setpred_assign_thr", 0.5))
+        self.setpred_exist_weight = float(self.configs.get("setpred_exist_weight", 1.0))
+        self.setpred_assign_weight = float(self.configs.get("setpred_assign_weight", 1.0))
+        self.set_pred_head = None
+        self._setpred_last_diag = None
+        if self.setpred_use or self.setpred_loss_w > 0:
+            from wmpgnn.model.set_pred_head import SetPredHead
+            try:
+                _blk0 = self.model._blocks[-1]
+                _dn = int(getattr(_blk0, "_ndim", 16))
+                _de = int(getattr(_blk0, "_edim", 16))
+            except Exception as e:
+                _dn, _de = 16, 16
+                print(f"[setpred] WARN 维度探测失败 ({type(e).__name__}: {e}), 用默认 16/16")
+            self.set_pred_head = SetPredHead(
+                _dn, _de, n_slots=self.setpred_nslots, hidden=self.setpred_hidden,
+                heads=self.setpred_heads, assign_mode=self.setpred_assign,
+                pairwise=self.setpred_pairwise)
+            # 打开最后一个 block 的 pair-wise 边表征暂存 (供 set_pred_head)
+            if hasattr(self, "model") and hasattr(self.model, "_blocks"):
+                for _b in self.model._blocks:
+                    _b._stash_emb = True
+            print(f"[setpred] 集合预测头启用: use={self.setpred_use} decode={self.setpred_decode} "
+                  f"w={self.setpred_loss_w} K={self.setpred_nslots} pairwise={self.setpred_pairwise} "
+                  f"assign={self.setpred_assign} dustbin_w={self.setpred_dustbin_w} "
+                  f"d_node={_dn} d_edge={_de} exist_thr={self.setpred_exist_thr} "
+                  f"assign_thr={self.setpred_assign_thr}", flush=True)
+
         # ==== [2026-10-13] 方向4: 几何候选生成 (用物理量而非分类器决定候选集) ====
         # 动机: 现在 recall 由学出来的边二分类头决定, 漏一条真值边整条链报废 (AND 语义), 给不出
         #   召回保证; 且下游要在 O(N^2) 的候选里学占比极低的真值边。本方向把"生成候选"从学习里
@@ -1106,12 +1159,19 @@ class DFEILightningModule(L.LightningModule):
             has_sr = any(k.startswith("seqrec_params.") for k in checkpoint.get("state_dict", {}))
             if not has_sr:
                 new_heads.append("seqrec_params")
+        # [2026-10-13] 方向2: 集合预测头 (旧 ckpt 无 -> 重置优化器状态)
+        if getattr(self, "set_pred_head", None) is not None:
+            has_sp = any(k.startswith("set_pred_head.") for k in checkpoint.get("state_dict", {}))
+            if not has_sp:
+                new_heads.append("set_pred_head")
         if new_heads:
             print(f"[heads] 旧 checkpoint 无 {new_heads} 头: "
                   "重置 optimizer/lr_scheduler 状态 (新头无历史动量, 从当前 lr 重新起步)")
             _all = list(self.model.parameters())
             if getattr(self, "seqrec_params", None) is not None:
                 _all += list(self.seqrec_params.parameters())
+            if getattr(self, "set_pred_head", None) is not None:
+                _all += list(self.set_pred_head.parameters())
             opt = self.optimizer_class(_all, **self.optimizer_params)
             checkpoint["optimizer_states"] = [opt.state_dict()]
             sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -1143,7 +1203,9 @@ class DFEILightningModule(L.LightningModule):
                          # [2026-09-26] tt 边图注意力 (挂最后一个 GN block 内, 零初始化 -> 允许缺失)
                          or "_line_attn." in k
                          # [2026-10-13] 方向3: seqrec 可学习标量 (lam/cut), 旧 ckpt 无
-                         or k.startswith("seqrec_params."))]
+                         or k.startswith("seqrec_params.")
+                         # [2026-10-13] 方向2: 集合预测头 (新头, 旧 ckpt 无 -> 随机初始化)
+                         or k.startswith("set_pred_head."))]
             shape_mm = []
             for k in cur:
                 if k not in state_dict:
@@ -1228,11 +1290,117 @@ class DFEILightningModule(L.LightningModule):
             print(f"[seqrec] WARN: {type(e).__name__}: {e}")
             return None
 
+    def _setpred_event_inputs(self, batch, block):
+        """方向2: 把最后一个 block 暂存的节点/边表征按**事件**切片 (事件隔离的输入)。
+
+        返回 list[(h_node [N,d], edge_index [2,M], h_edge [M,d])], 每项一个事件, 顺序 = 事件 id。
+        h_edge 取 `block._last_edge_emb` (pair-wise tt 边表征, 与 tt edge_index 同序)。
+        """
+        h_node = getattr(block, "_last_node_emb", None)
+        if h_node is None:
+            return None
+        h_edge = getattr(block, "_last_edge_emb", None)
+        ei = batch[('tracks', 'to', 'tracks')].edge_index
+        n_nodes = h_node.shape[0]
+        tb = (batch['tracks'].batch if 'batch' in batch['tracks']
+              else torch.zeros(n_nodes, dtype=torch.long, device=h_node.device))
+        eb = tb[ei[0]]
+        n_ev = int(tb.max().item()) + 1 if tb.numel() > 0 else 0
+        out = []
+        for e in range(n_ev):
+            nm = (tb == e)
+            em = (eb == e)
+            # 边端点必须转成**事件内局部索引** (h_node/agg 都按事件裁剪; 全局索引会越界)
+            g2l = torch.full((n_nodes,), -1, dtype=torch.long, device=h_node.device)
+            g2l[nm] = torch.arange(int(nm.sum()), device=h_node.device)
+            ei_e = g2l[ei[:, em]]
+            out.append((h_node[nm], ei_e,
+                        (h_edge[em] if h_edge is not None else None)))
+        return out
+
+    def _setpred_loss(self, batch, outputs, block):
+        """方向2: 训练集合预测头 (逐事件匈牙利匹配; 事件隔离)。
+
+        真值链用本文件**模块级**的 `truth_chain_labels` (对全图统一重编号, -1=背景),
+        再按事件切分 -> 不同事件的径迹绝不进同一槽位匹配。
+        缺省 (set_pred_head 未建 / 未暂存表征) 返回 None。
+        """
+        if getattr(self, "set_pred_head", None) is None:
+            return None
+        ev_in = self._setpred_event_inputs(batch, block)
+        if ev_in is None:
+            return None
+        try:
+            from wmpgnn.model.set_pred_head import setpred_event_loss
+            _tt = batch[('tracks', 'to', 'tracks')]
+            n_nodes = batch['tracks'].x.shape[0]
+            lab = truth_chain_labels(_tt.y, _tt.edge_index, n_nodes)   # 全局唯一链 id (-1=背景)
+            tb = (batch['tracks'].batch if 'batch' in batch['tracks']
+                  else torch.zeros(n_nodes, dtype=torch.long, device=lab.device))
+            losses, diags = [], []
+            for e, (hn, ei_e, he) in enumerate(ev_in):
+                lab_e = lab[tb == e]                                  # 事件内节点链 id
+                uniq = torch.unique(lab_e[lab_e >= 0])
+                if uniq.numel() > 0:
+                    gm = torch.stack([(lab_e == u) for u in uniq.tolist()], 0)   # [G,N] bool
+                else:
+                    gm = torch.zeros((0, hn.shape[0]), dtype=torch.bool, device=hn.device)
+                out = self.set_pred_head.forward_event(hn, ei_e, he)
+                l, d = setpred_event_loss(out, gm,
+                                          exist_weight=self.setpred_exist_weight,
+                                          assign_weight=self.setpred_assign_weight,
+                                          assign_mode=self.setpred_assign,
+                                          dustbin_weight=self.setpred_dustbin_w)
+                losses.append(l)
+                diags.append(d)
+            if not losses:
+                return None
+            loss = torch.stack(losses).mean()
+            self._setpred_last_diag = dict(
+                n_evt=len(diags), n_gt=sum(d["n_gt"] for d in diags),
+                n_matched=sum(d["n_matched"] for d in diags),
+                exist=float(np.mean([d["exist"] for d in diags])),
+                mask=float(np.mean([d["mask"] for d in diags])))
+            return loss
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[setpred] WARN(loss): {type(e).__name__}: {e}")
+            return None
+
+    def _setpred_labels(self, batch, block):
+        """方向2 (推理): 逐事件解码槽位 -> 逐节点标签。
+
+        返回 list[np.ndarray int] (每个事件一项, 长度 = 该事件径迹数, 事件内标签 0..K-1 / -1=背景),
+        顺序 = 事件 id; 供重建阶段按 setpred_decode 取代连通分量。
+        """
+        if getattr(self, "set_pred_head", None) is None:
+            return None
+        ev_in = self._setpred_event_inputs(batch, block)
+        if ev_in is None:
+            return None
+        try:
+            from wmpgnn.model.set_pred_head import decode_slots
+            labels = []
+            for (hn, ei_e, he) in ev_in:
+                out = self.set_pred_head.forward_event(hn, ei_e, he)
+                lbl, _alive = decode_slots(out, exist_thr=self.setpred_exist_thr,
+                                           assign_mode=self.setpred_assign,
+                                           assign_thr=self.setpred_assign_thr)
+                labels.append(lbl.detach().cpu().numpy().astype(int))
+            return labels
+        except Exception as e:
+            print(f"[setpred] WARN(labels): {type(e).__name__}: {e}")
+            return None
+
     def configure_optimizers(self):
         params = list(self.model.parameters())
         # 方向3: seqrec 可学习标量 (lam/cut) 加入优化器 (仅当其存在)
         if getattr(self, "seqrec_params", None) is not None:
             params += list(self.seqrec_params.parameters())
+        # 方向2: 集合预测头 (DETR 式) 加入优化器 (仅当其存在)
+        if getattr(self, "set_pred_head", None) is not None:
+            params += list(self.set_pred_head.parameters())
         optimizer = self.optimizer_class(params, **self.optimizer_params)
 
 
@@ -1977,6 +2145,13 @@ class DFEILightningModule(L.LightningModule):
             if _sr is not None:
                 loss["seqrec"] = _sr
                 log.setdefault("seqrec_loss", []).append(float(_sr.detach()))
+        # ==== [2026-10-13] 方向2: 集合预测头训练损失 (逐事件匈牙利匹配) ====
+        # 缺省 setpred_loss_w=0 或头未建 -> 整段不执行, 与旧行为逐位一致; 权重下方统一乘。
+        if mode == "train" and self.setpred_loss_w > 0 and self.set_pred_head is not None:
+            _sp = self._setpred_loss(batch, outputs, block)
+            if _sp is not None:
+                loss["setpred"] = _sp
+                log.setdefault("setpred_loss", []).append(float(_sp.detach()))
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:
@@ -2009,6 +2184,9 @@ class DFEILightningModule(L.LightningModule):
         # [2026-10-13] 方向3: seqrec 代理损失 (训练 lam / cut)
         if self.seqrec_loss_weight > 0 and "seqrec" in loss:
             combined_loss = combined_loss + self.seqrec_loss_weight * loss["seqrec"]
+        # [2026-10-13] 方向2: 集合预测头损失 (原始值在 loss dict 中, 此处统一乘权重)
+        if self.setpred_loss_w > 0 and "setpred" in loss:
+            combined_loss = combined_loss + self.setpred_loss_w * loss["setpred"]
 
         # 极端防御: 组合 loss 仍非有限或异常巨大时, 置为 0 损失, 避免梯度爆炸污染训练
         if not torch.isfinite(combined_loss) or combined_loss > 1e5:
@@ -2039,6 +2217,13 @@ class DFEILightningModule(L.LightningModule):
             # 注入内置 scorer (联合训练挂载在 model 上), 供链级选择使用
             if self.chain_scorer is not None:
                 self.evt_reco.chain_scorer = self.chain_scorer
+            # ==== [2026-10-13] 方向2: 集合预测解码 -> 逐事件节点标签 (供重建取代连通分量) ====
+            # 仅 setpred_decode=True 时计算; 缺省不执行 -> 与旧行为逐位一致。
+            # 标签按**全图事件节点序**存成 list (每事件一项), 由重建阶段按 setpred_decode 消费。
+            if self.setpred_decode and self.set_pred_head is not None:
+                _sp_labels = self._setpred_labels(batch, block)
+                if _sp_labels is not None:
+                    outputs.setpred_labels = _sp_labels
             self.evt_reco.reconstruct_heavyhadrons(outputs, pv_des=pv_asso_des)
 
         """Logging"""

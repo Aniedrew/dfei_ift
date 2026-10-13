@@ -154,6 +154,8 @@ class HeteroGraphNetwork(pl.LightningModule):
         _edim = edge_configs[_ekey_tt]["layers"][-1] if _ekey_tt in edge_configs \
             else self._mlp_forward["layers"][-1]
         _ndim = node_configs["tracks"]["layers"][-1]
+        # [2026-10-13] 方向2: 暴露 tracks 节点表征维 / tt 边表征维 (供 set_pred_head 建模块用)
+        self._ndim, self._edim = _ndim, _edim
 
         self._pv_inject = bool(config.get("pv_overlap_inject", False))
         self._pv_ov_adapter = None
@@ -177,6 +179,10 @@ class HeteroGraphNetwork(pl.LightningModule):
         self._evt_count = None
         self._evt_count_logits = None
         self._last_node_emb = None
+        # [2026-10-13] 方向2: 暂存最后一个 block 的 tt 边表征 (pair-wise), 供 set_pred_head 使用。
+        # 仅当 block 的 _stash_emb=True (由 lightning module 在开启 setpred 时设置) 时写入 ->
+        # 缺省关闭时保持 None, 与 v654 逐位一致。
+        self._last_edge_emb = None
         if self._evt_count_on:
             self._evt_count = torch.nn.Linear(_ndim, 4)   # 0/1/2/>=3 条真值链
             print("[event_count] 事件级链数辅助头启用")
@@ -329,6 +335,11 @@ class HeteroGraphNetwork(pl.LightningModule):
             _cnt = torch.bincount(_b, minlength=_n_ev).clamp_min(1).to(_x.dtype).unsqueeze(1)
             _evt = _sum / _cnt                                    # (n_ev, D) 事件级表征
             self._last_node_emb = _x                              # 供链级对比损失使用
+            # [2026-10-13] 方向2: 同一 guard 内暂存 tt 边表征 (pair-wise), 供 set_pred_head。
+            # 用 node_input[_tt].edges (= 喂给边剪枝 MLP 的边表征, 与 edge_index 同序);
+            # 仅在 _stash_emb=True 时写入 -> 缺省 None, 与 v654 逐位一致。
+            if getattr(self, "_stash_emb", False):
+                self._last_edge_emb = node_input[_tt].edges
             if self._evt_bias is not None:
                 _bias = self._evt_bias(_evt)                      # (n_ev, 1)
                 _nl = self.node_logits["tracks"]

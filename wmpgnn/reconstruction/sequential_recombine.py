@@ -313,6 +313,44 @@ def seqrec_chains(lca_matrix, particle_keys, n_nodes, metric="mix", cut=None,
     return rc_dict, nclust
 
 
+def cluster_chains_from_labels(labels, lca_matrix, particle_keys):
+    """[方向2] 用逐节点标签 (>=0; -1=背景) 划分事件, 再逐簇调用 reconstruct_decay 解析链内结构。
+
+    与 seqrec_chains 的"尾段"完全同构, 只是划分来源不同 (集合预测头 slot 归属 vs
+    sequential recombination)。lca_matrix: DataFrame(columns 含 senders/receivers/LCA_dec)。
+    返回 (rc_dict, num_clusters_per_order) —— 与 reconstruct_decay 同构。
+    排他性: labels 是由逐径迹 argmax 得到的**单一标签** -> 每条径迹只属于一个簇。
+    """
+    import numpy as np
+    from wmpgnn.reconstruction.reco_helper import reconstruct_decay
+
+    rc_dict = {}
+    nclust = [0, 0, 0, 0]
+    if lca_matrix is None or len(lca_matrix) == 0:
+        return rc_dict, nclust
+    cand = lca_matrix[lca_matrix["LCA_dec"] > 0]
+    if len(cand) == 0:
+        return rc_dict, nclust
+    labels = np.asarray(labels, dtype=int)
+    for lab in np.unique(labels[labels >= 0]):
+        nodes = np.nonzero(labels == lab)[0]
+        if nodes.size < 2:
+            continue
+        sub_keys = [particle_keys[i] for i in nodes]
+        relabel = {int(g): k for k, g in enumerate(nodes.tolist())}
+        sub = cand[cand["senders"].isin(relabel) & cand["receivers"].isin(relabel)].copy()
+        sub["senders"] = sub["senders"].map(relabel)
+        sub["receivers"] = sub["receivers"].map(relabel)
+        sub_rc, sub_nclust, _ = reconstruct_decay(
+            sub[["senders", "receivers", "LCA_dec"]], sub_keys)
+        for g in range(4):
+            nclust[g] += sub_nclust[g]
+        for k, v in sub_rc.items():
+            if k not in rc_dict or len(v["node_keys"]) > len(rc_dict[k]["node_keys"]):
+                rc_dict[k] = v
+    return rc_dict, nclust
+
+
 # ---------------------------------------------------------------------------
 # 可学习参数 (供模型侧优化器)
 # ---------------------------------------------------------------------------
