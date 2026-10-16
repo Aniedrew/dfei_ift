@@ -47,6 +47,21 @@ def main():
         if not m or "RUNNUMBER" not in open(csv).readline():
             continue
         v = int(m.group(1))
+        # [防护] 只接受属于该版本目录的评估文件 (tag 以 v<ver>_ 开头, 或等于该目录的 over_write),
+        # 防止"配置里 model 键没改"导致别的臂把结果写进本目录(2026-10-16 combo 事故)
+        _ow = set()
+        _ic = f"{ROOT}/version_%d/input_config.yaml" % int(re.search(r"version_(\d+)", csv).group(1))
+        try:
+            import yaml as _y
+            _c = _y.safe_load(open(_ic))
+            for _sec in ("evaluate", "inference", "settings"):
+                if isinstance(_c.get(_sec), dict) and _c[_sec].get("over_write"):
+                    _ow.add(str(_c[_sec]["over_write"]))
+        except Exception:
+            pass
+        _vnum = re.search(r"version_(\d+)", csv).group(1)
+        if not (tag.startswith(f"v{_vnum}_") or tag in _ow):
+            continue
         d = pd.read_csv(csv)
         if len(d) == 0:
             continue

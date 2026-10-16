@@ -234,7 +234,7 @@ settings:
   sample:
   - inclusive_00342451
   weight_decay: 1e-5
-  model: 651
+  model: 1101
   monitor_metric: val_prune_ap
   validate_prune_metric: true
   validate_prune_events: 1000

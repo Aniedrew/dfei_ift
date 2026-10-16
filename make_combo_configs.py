@@ -41,6 +41,8 @@ def main():
                 ln = re.sub(r":\s*\d+\s*$", f": {ver}", ln)
             elif re.match(r"\s*over_write:", ln):
                 ln = re.sub(r":.*$", f": {tag}", ln)
+            elif re.match(r"\s*model:\s*\d+\s*$", ln):
+                ln = re.sub(r":\s*\d+", f": {ver}", ln)
             elif re.match(r"\s*epochs:", ln):
                 ln = re.sub(r":\s*\d+\s*$", ": 120", ln)
             out.append(ln)
