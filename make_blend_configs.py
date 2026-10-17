@@ -33,6 +33,9 @@ ARMS = [
     ("blend_c", "v651", True, 20.0, True, None, None),
     ("blend_d", "v651", True, 40.0, False, None, None),
     ("faircombo", "v651", False, None, True, 120, 60),
+    # 四合一: 四个已验证成分全部叠加 (ctxprune +6.91 / rankx2 +4.99 / crtau03 +4.71 / ep120 +3.81)
+    ("quad_v654", "v654", True, 20.0, True, 120, None),
+    ("quad_v651", "v651", True, 20.0, True, 120, None),
 ]
 
 
