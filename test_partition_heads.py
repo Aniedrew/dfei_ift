@@ -118,3 +118,13 @@ print()
 print("=" * 70)
 print("全部通过")
 print("=" * 70)
+
+# ---- B14 严格版: 划分一致性损失 ----
+from wmpgnn.model.partition_heads import partition_relax_loss
+yg = torch.tensor([0, 0, 1, 1, -1])
+good = torch.tensor([[8., -8., -8.], [8., -8., -8.], [-8., 8., -8.], [-8., 8., -8.], [-8., -8., -8.]])
+bad = torch.full((5, 3), 8.0)
+print("=" * 70); print("B14 划分一致性损失")
+t("好 mask 损失极小", float(partition_relax_loss(good, yg)) < 0.01)
+t("坏 mask 损失显著变大", float(partition_relax_loss(bad, yg)) > 10 * float(partition_relax_loss(good, yg)))
+print("全部通过(B14)")

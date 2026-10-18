@@ -202,3 +202,23 @@ def decode_assign(score, edges, n, thr=0.5, dustbin_thr=0.5):
         for i in s:
             lab[i] = c
     return lab
+
+
+def partition_relax_loss(mask_logit, y, eps=1e-6):
+    """M4 严格版: 由槽位 mask 诱导成对"同对象"概率 P_ij = sum_k p_ik p_jk,
+    直接惩罚"两个真值对象被合并"(P 高但不同) 与"一个对象被切开"(P 低但相同)。
+    与逐边 BCE 的区别: 这是**划分级**目标, 经 mask 诱导, 梯度穿过整个划分。"""
+    p = torch.sigmoid(mask_logit)                      # (N,K)
+    P = p @ p.t()                                      # (N,N)
+    same = (y[:, None] == y[None, :]) & (y[:, None] >= 0)
+    eye = torch.eye(len(y), dtype=torch.bool, device=y.device)
+    same = same & ~eye
+    diff = (~same) & (~eye)
+    total, n = 0.0, 0
+    if same.any():
+        total = total - torch.log(P[same].clamp_min(eps)).mean(); n += 1
+    if diff.any():
+        total = total - torch.log((1.0 - P[diff]).clamp_min(eps)).mean(); n += 1
+    if n == 0:
+        return mask_logit.sum() * 0.0
+    return total / n

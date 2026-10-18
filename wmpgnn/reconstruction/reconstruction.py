@@ -582,6 +582,21 @@ class EventReconstruction:
         return rc_dict, nclust
 
     def _reconstruct_seqrec(self, graph):
+        # [2026-10-18] B17: 分配式解码 (不删边, 而是把径迹"分配"进簇; 天然排他)
+        if str(self.configs.get("seqrec_decode", "")).lower() == "assign":
+            try:
+                from wmpgnn.model.partition_heads import decode_assign
+                _p = getattr(graph, "_seqrec_p", None)
+                if _p is not None:
+                    _n = int(graph['tracks'].x.shape[0])
+                    _lab = decode_assign(_p.detach().cpu(),
+                                         graph[('tracks', 'to', 'tracks')].edge_index.cpu(),
+                                         _n, thr=float(self.configs.get("seqrec_assign_thr", 0.5)))
+                    graph._setpred_label = _lab
+                    return self._reconstruct_setpred(graph)
+            except Exception as e:
+                print(f"[seqrec] WARN assign 解码失败: {type(e).__name__}: {e}")
+
         """方向3: 用 sequential recombination (anti-kT 式层次聚类) 取代连通分量。
 
         在剪枝后的候选边 (模型判 LCA>0) 上, 用边存活概率 p_e 与几何距离 d_geom 计算

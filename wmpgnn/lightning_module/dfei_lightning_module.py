@@ -1391,6 +1391,10 @@ class DFEILightningModule(L.LightningModule):
                 if self.slot_head is not None:
                     m, o = self.slot_head(hn)
                     l2, _, _ = slot_mask_loss(m, o, y_e)
+                    _rw = float(self.configs.get("part_relax_weight", 0.0))
+                    if _rw > 0:
+                        from wmpgnn.model.partition_heads import partition_relax_loss
+                        l2 = l2 + _rw * partition_relax_loss(m, y_e)
                     sls.append(l2)
             if self.oc_head is not None and ocs:
                 return torch.stack(ocs).mean(), "oc"
