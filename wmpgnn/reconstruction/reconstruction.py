@@ -726,6 +726,31 @@ class EventReconstruction:
         tc_dict, t_nclust_order, max_chain_depth = reconstruct_decay(true_LCA, particle_keys,
                                                                      particle_ids=particle_ids,
                                                                      truth_level_simulation=1)
+
+        # ==== [2026-10-18] 边分数/真值离线导出 (供解码器动物园, configs["dump_edges"] 指定目录) ====
+        _dumpdir = self.configs.get("dump_edges", "") if isinstance(self.configs, dict) else ""
+        _eid0 = int(self.configs.get("dump_event_counter", 0)) if isinstance(self.configs, dict) else 0
+        _dmax = int(self.configs.get("dump_max", 10**9)) if isinstance(self.configs, dict) else 0
+        if _dumpdir and _eid0 < _dmax:
+            import numpy as _np
+            _ei = graph[('tracks', 'to', 'tracks')].edge_index.detach().cpu().numpy()
+            _lca = graph[('tracks', 'to', 'tracks')].lca
+            _lca = (torch.softmax(_lca.float(), dim=-1) if _lca.dim() > 1 else _lca).detach().cpu().numpy()
+            _n = int(graph['tracks'].x.shape[0])
+            _chain = -_np.ones(_n, dtype=_np.int32)
+            for _ci, _k in enumerate(tc_dict.keys()):
+                for _nk in tc_dict[_k]['node_keys']:
+                    if 0 <= int(_nk) < _n:
+                        _chain[int(_nk)] = _ci
+            _pid = get_truth_part_ids(graph).detach().cpu().numpy().astype(_np.int64)
+            _tag = str(self.configs.get("dump_tag", "dump"))
+            _eid = int(self.configs.get("dump_event_counter", 0))
+            os.makedirs(_dumpdir, exist_ok=True)
+            _np.savez_compressed(os.path.join(_dumpdir, f"{_tag}_{_eid:05d}.npz"),
+                                 edges=_ei.astype(_np.int32), lca=_lca.astype(_np.float32),
+                                 chain=_chain, pid=_pid)
+            self.configs["dump_event_counter"] = _eid + 1
+
         if tc_dict != {}:
             part_heavy_h = flatten([tc_dict[tc_firstkey]['node_keys'] for tc_firstkey in tc_dict.keys()])
             n_part_heavy_h = len(part_heavy_h)
