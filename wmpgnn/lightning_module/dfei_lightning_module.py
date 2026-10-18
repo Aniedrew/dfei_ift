@@ -1063,6 +1063,41 @@ class DFEILightningModule(L.LightningModule):
                   f"d_node={_dn} d_edge={_de} exist_thr={self.setpred_exist_thr} "
                   f"assign_thr={self.setpred_assign_thr}", flush=True)
 
+        # ==== [2026-10-18] 输出侧 M1/M2: Object Condensation / Slot+Mask ====
+        # 剪枝侧完全冻结: 本段只新建输出头，节点表示复用最后一个 block 暂存的 _last_node_emb。
+        self.oc_use = bool(self.configs.get("oc_head", False))
+        self.oc_loss_w = float(self.configs.get("oc_loss_weight", 0.0))
+        self.oc_s_rep = float(self.configs.get("oc_s_rep", 0.06))
+        self.oc_margin = float(self.configs.get("oc_margin", 1.0))
+        self.slot_use = bool(self.configs.get("slot_head", False))
+        self.slot_loss_w = float(self.configs.get("slot_loss_weight", 0.0))
+        self.slot_k = int(self.configs.get("slot_k", 4))
+        self.oc_head = None
+        self.slot_head = None
+        if self.oc_use or self.slot_use:
+            from wmpgnn.model.partition_heads import OCHead, SlotMaskHead
+            try:
+                _dpart = int(getattr(self.model._blocks[-1], "_ndim", 16))
+            except Exception:
+                _dpart = 16
+            for _b in self.model._blocks:
+                _b._stash_emb = True
+            if self.oc_use:
+                self.oc_head = OCHead(_dpart, emb_dim=int(self.configs.get("oc_emb_dim", 8)),
+                                      hidden=int(self.configs.get("oc_hidden", 64)))
+            if self.slot_use:
+                self.slot_head = SlotMaskHead(_dpart, n_slots=self.slot_k,
+                                              hidden=int(self.configs.get("slot_hidden", 64)))
+            print(f"[partition] OC={self.oc_use}(w={self.oc_loss_w}) Slot={self.slot_use}"
+                  f"(w={self.slot_loss_w},K={self.slot_k}) d_node={_dpart}", flush=True)
+            # 冻结剪枝/主干: 只更新新头, 保证"pruning 定住"且增益可归因
+            if bool(self.configs.get("freeze_backbone", False)):
+                _nf = 0
+                for _p in self.model.parameters():
+                    if _p.requires_grad:
+                        _p.requires_grad = False; _nf += 1
+                print(f"[partition] freeze_backbone=True: 冻结主干参数 {_nf} 组, 只训练新头", flush=True)
+
         # ==== [2026-10-13] 方向4: 几何候选生成 (用物理量而非分类器决定候选集) ====
         # 动机: 现在 recall 由学出来的边二分类头决定, 漏一条真值边整条链报废 (AND 语义), 给不出
         #   召回保证; 且下游要在 O(N^2) 的候选里学占比极低的真值边。本方向把"生成候选"从学习里
@@ -1164,6 +1199,10 @@ class DFEILightningModule(L.LightningModule):
             has_sp = any(k.startswith("set_pred_head.") for k in checkpoint.get("state_dict", {}))
             if not has_sp:
                 new_heads.append("set_pred_head")
+        for _hn, _hobj in (("oc_head", getattr(self, "oc_head", None)),
+                           ("slot_head", getattr(self, "slot_head", None))):
+            if _hobj is not None and not any(k.startswith(_hn + ".") for k in checkpoint.get("state_dict", {})):
+                new_heads.append(_hn)
         if new_heads:
             print(f"[heads] 旧 checkpoint 无 {new_heads} 头: "
                   "重置 optimizer/lr_scheduler 状态 (新头无历史动量, 从当前 lr 重新起步)")
@@ -1172,6 +1211,9 @@ class DFEILightningModule(L.LightningModule):
                 _all += list(self.seqrec_params.parameters())
             if getattr(self, "set_pred_head", None) is not None:
                 _all += list(self.set_pred_head.parameters())
+            for _hobj in (getattr(self, "oc_head", None), getattr(self, "slot_head", None)):
+                if _hobj is not None:
+                    _all += list(_hobj.parameters())
             opt = self.optimizer_class(_all, **self.optimizer_params)
             checkpoint["optimizer_states"] = [opt.state_dict()]
             sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -1205,7 +1247,8 @@ class DFEILightningModule(L.LightningModule):
                          # [2026-10-13] 方向3: seqrec 可学习标量 (lam/cut), 旧 ckpt 无
                          or k.startswith("seqrec_params.")
                          # [2026-10-13] 方向2: 集合预测头 (新头, 旧 ckpt 无 -> 随机初始化)
-                         or k.startswith("set_pred_head."))]
+                         or k.startswith("set_pred_head.")
+                         or k.startswith("oc_head.") or k.startswith("slot_head."))]
             shape_mm = []
             for k in cur:
                 if k not in state_dict:
@@ -1317,6 +1360,48 @@ class DFEILightningModule(L.LightningModule):
             out.append((h_node[nm], ei_e,
                         (h_edge[em] if h_edge is not None else None)))
         return out
+
+    def _partition_loss(self, batch, outputs, block):
+        """[2026-10-18] M1/M2: 逐事件在**节点表示**上算 OC / Slot+Mask 损失 (事件隔离)。
+
+        输入复用 `_setpred_event_inputs` 的 (h_node, edge_index, h_edge); 只用到 h_node。
+        真值用模块级 `truth_chain_labels` (-1=背景), 按事件切片。
+        """
+        if self.oc_head is None and self.slot_head is None:
+            return None, None
+        ev_in = self._setpred_event_inputs(batch, block)
+        if ev_in is None:
+            return None, None
+        try:
+            from wmpgnn.model.partition_heads import oc_loss, slot_mask_loss
+            _tt = batch[('tracks', 'to', 'tracks')]
+            n_nodes = batch['tracks'].x.shape[0]
+            lab = truth_chain_labels(_tt.y, _tt.edge_index, n_nodes)
+            tb = (batch['tracks'].batch if 'batch' in batch['tracks']
+                  else torch.zeros(n_nodes, dtype=torch.long, device=lab.device))
+            ocs, sls = [], []
+            for e, (hn, _ei_e, _he) in enumerate(ev_in):
+                if hn.shape[0] == 0:
+                    continue
+                y_e = lab[tb == e]
+                if self.oc_head is not None:
+                    b, emb = self.oc_head(hn)
+                    l, _ = oc_loss(b, emb, y_e, s_rep=self.oc_s_rep, margin=self.oc_margin)
+                    ocs.append(l)
+                if self.slot_head is not None:
+                    m, o = self.slot_head(hn)
+                    l2, _, _ = slot_mask_loss(m, o, y_e)
+                    sls.append(l2)
+            if self.oc_head is not None and ocs:
+                return torch.stack(ocs).mean(), "oc"
+            if self.slot_head is not None and sls:
+                return torch.stack(sls).mean(), "slot"
+            return None, None
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[partition] WARN: {type(e).__name__}: {e}")
+            return None, None
 
     def _setpred_loss(self, batch, outputs, block):
         """方向2: 训练集合预测头 (逐事件匈牙利匹配; 事件隔离)。
@@ -2152,6 +2237,12 @@ class DFEILightningModule(L.LightningModule):
             if _sp is not None:
                 loss["setpred"] = _sp
                 log.setdefault("setpred_loss", []).append(float(_sp.detach()))
+        # ==== [2026-10-18] M1/M2 输出头损失 (OC / Slot+Mask) ====
+        if mode == "train" and (self.oc_head is not None or self.slot_head is not None):
+            _pl, _pname = self._partition_loss(batch, outputs, block)
+            if _pl is not None:
+                loss[_pname] = _pl
+                log.setdefault(f"{_pname}_loss", []).append(float(_pl.detach()))
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:
@@ -2187,6 +2278,11 @@ class DFEILightningModule(L.LightningModule):
         # [2026-10-13] 方向2: 集合预测头损失 (原始值在 loss dict 中, 此处统一乘权重)
         if self.setpred_loss_w > 0 and "setpred" in loss:
             combined_loss = combined_loss + self.setpred_loss_w * loss["setpred"]
+        # [2026-10-18] M1/M2
+        if self.oc_loss_w > 0 and "oc" in loss:
+            combined_loss = combined_loss + self.oc_loss_w * loss["oc"]
+        if self.slot_loss_w > 0 and "slot" in loss:
+            combined_loss = combined_loss + self.slot_loss_w * loss["slot"]
 
         # 极端防御: 组合 loss 仍非有限或异常巨大时, 置为 0 损失, 避免梯度爆炸污染训练
         if not torch.isfinite(combined_loss) or combined_loss > 1e5:
