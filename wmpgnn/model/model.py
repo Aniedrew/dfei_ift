@@ -78,12 +78,16 @@ class DFEI_HGNN(pl.LightningModule):
         _tt = ('tracks', 'to', 'tracks')
         _x_der = getattr(data['tracks'], 'x_der', None)
         _e_der = getattr(data[_tt], 'der_edges', None)
+        # ==== [2026-10-13] 方向4: 几何候选窗口掩码 (由 lightning module 挂上; 默认无此属性) ====
+        _geom_keep = getattr(data[_tt], 'geom_keep', None)
 
         def _reattach(g):
             if _x_der is not None and g['tracks'].x.shape[0] == _x_der.shape[0]:
                 g['tracks'].x_der = _x_der
             if _e_der is not None and g[_tt].edges.shape[0] == _e_der.shape[0]:
                 g[_tt].der_edges = _e_der
+            if _geom_keep is not None and g[_tt].edges.shape[0] == _geom_keep.shape[0]:
+                g[_tt].geom_keep = _geom_keep
             return g
 
         # Latent graph
@@ -106,6 +110,9 @@ class DFEI_HGNN(pl.LightningModule):
             core._evt_active = b == (len(self._blocks) - 1)
             # ==== [2026-09-26] tt 边图注意力同样只在最后一个 block 生效 ====
             core._line_active = b == (len(self._blocks) - 1)
+            # ==== [2026-10-13] 方向4: 几何候选窗口消息屏蔽同样只在最后一个 block 生效 ====
+            core._geom_keep = _geom_keep
+            core._geom_active = b == (len(self._blocks) - 1)
             core._pv_ov_in = self._pv_ov_carry       # 上一 block 在同一次 forward 里算出的 PV 软重叠
             data = core(data, init_graph_pid)
             self._pv_ov_carry = getattr(core, "_pv_ov_cache", None)   # 递给下一个 block

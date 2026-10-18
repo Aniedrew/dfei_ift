@@ -1453,6 +1453,33 @@ class DFEILightningModule(L.LightningModule):
             print(f"[setpred] WARN(loss): {type(e).__name__}: {e}")
             return None
 
+    def _partition_labels(self, batch, block):
+        """[2026-10-18] M1/M2 推理: 逐事件解码 -> 逐节点标签 (事件内 0..K-1 / -1=背景)。"""
+        if getattr(self, "oc_head", None) is None and getattr(self, "slot_head", None) is None:
+            return None
+        ev_in = self._setpred_event_inputs(batch, block)
+        if ev_in is None:
+            return None
+        try:
+            from wmpgnn.model.partition_heads import decode_oc, decode_slots
+            labels = []
+            for (hn, _ei_e, _he) in ev_in:
+                with torch.no_grad():
+                    if getattr(self, "oc_head", None) is not None:
+                        b, emb = self.oc_head(hn)
+                        lbl = decode_oc(torch.sigmoid(b), emb,
+                                        beta_thr=float(self.configs.get("oc_beta_thr", 0.5)),
+                                        td=float(self.configs.get("oc_td", 1.0)))
+                    else:
+                        m, o = self.slot_head(hn)
+                        lbl = decode_slots(m, o,
+                                           mask_thr=float(self.configs.get("slot_mask_thr", 0.5)))
+                labels.append(lbl.detach().cpu().numpy().astype(int))
+            return labels
+        except Exception as e:
+            print(f"[partition] WARN(labels): {type(e).__name__}: {e}")
+            return None
+
     def _setpred_labels(self, batch, block):
         """方向2 (推理): 逐事件解码槽位 -> 逐节点标签。
 
@@ -1486,6 +1513,10 @@ class DFEILightningModule(L.LightningModule):
         # 方向2: 集合预测头 (DETR 式) 加入优化器 (仅当其存在)
         if getattr(self, "set_pred_head", None) is not None:
             params += list(self.set_pred_head.parameters())
+        # [2026-10-18] M1/M2 输出头必须进优化器 (否则 freeze_backbone 下参数永不更新)
+        for _hobj in (getattr(self, "oc_head", None), getattr(self, "slot_head", None)):
+            if _hobj is not None:
+                params += list(_hobj.parameters())
         optimizer = self.optimizer_class(params, **self.optimizer_params)
 
 
@@ -2320,6 +2351,11 @@ class DFEILightningModule(L.LightningModule):
                 _sp_labels = self._setpred_labels(batch, block)
                 if _sp_labels is not None:
                     outputs.setpred_labels = _sp_labels
+            # [2026-10-18] M1/M2: 新解码标签 (取代连通分量)
+            if bool(self.configs.get("partition_decode", False)):
+                _pl_labels = self._partition_labels(batch, block)
+                if _pl_labels is not None:
+                    outputs.setpred_labels = _pl_labels
             self.evt_reco.reconstruct_heavyhadrons(outputs, pv_des=pv_asso_des)
 
         """Logging"""

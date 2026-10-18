@@ -304,7 +304,7 @@ class EventReconstruction:
             # 标签由 lightning module 按**全图事件节点序**算好存进 outputs.setpred_labels[i];
             # 这里裁剪到剪枝后保留的节点 (node_selbool 顺序 = 保留节点在事件内的升序),
             # 使 graph['tracks'] 与标签一一对齐。仅 setpred_decode 时挂载 -> 缺省不执行。
-            if self.configs.get("setpred_decode", False):
+            if self.configs.get("setpred_decode", False) or self.configs.get("partition_decode", False):
                 try:
                     _sp_all = getattr(outputs, "setpred_labels", None)
                     if _sp_all is not None and i < len(_sp_all):

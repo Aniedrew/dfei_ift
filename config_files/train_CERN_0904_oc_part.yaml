@@ -169,6 +169,10 @@ DFEI:
   part_excl_weight: 1.0
   part_excl_tau: 0.3
   freeze_backbone: true
+  partition_decode: true
+  oc_beta_thr: 0.5
+  oc_td: 1.0
+  slot_mask_thr: 0.5
 evaluate:
   nfiles:
   - 20
@@ -238,3 +242,7 @@ settings:
   part_excl_weight: 1.0
   part_excl_tau: 0.3
   freeze_backbone: true
+  partition_decode: true
+  oc_beta_thr: 0.5
+  oc_td: 1.0
+  slot_mask_thr: 0.5

@@ -168,6 +168,10 @@ DFEI:
   slot_loss_weight: 2.0
   slot_k: 6
   freeze_backbone: true
+  partition_decode: true
+  oc_beta_thr: 0.5
+  oc_td: 1.0
+  slot_mask_thr: 0.5
 evaluate:
   nfiles:
   - 20
@@ -236,3 +240,7 @@ settings:
   slot_loss_weight: 2.0
   slot_k: 6
   freeze_backbone: true
+  partition_decode: true
+  oc_beta_thr: 0.5
+  oc_td: 1.0
+  slot_mask_thr: 0.5
