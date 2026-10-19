@@ -270,7 +270,7 @@ def note(s, text, y=6.35, size=14, *extra):
         text = text + " " + y
         y, size = size, (extra[0] if extra else 14)
     rect(s, MX, y - 0.08, 12.1, 0.02, ICE)
-    tb(s, MX, y, 12.1, 0.72, text, size, False, GREY, line=1.2)
+    tb(s, MX, y, 12.1, 0.5, text, size, False, GREY, line=1.2)
 
 
 def cover():
@@ -343,7 +343,7 @@ pic(s, P_PV, 0.7, 1.65, w=11.9)
 rect(s, MX, 5.55, 12.1, 1.05, LIGHT); rect(s, MX, 5.55, 0.06, 1.05, TEAL)
 tb(s, 0.85, 5.68, 11.7, 0.85, "13–14% before → 8.6% after retraining with a PV head (minIP 10.15)", BODY, True, NAVY)
 note(s, "PV misassociation is the fraction of tracks attached to the wrong interaction point. Lower is better; minIP is the",
-        "traditional LHCb baseline.", 6.75, 13)
+        "traditional LHCb baseline.", 6.55, 13)
 footer(s)
 
 s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
@@ -461,120 +461,234 @@ for i, (v, t) in enumerate(items):
 tb(s, MX, 6.25, 12.1, 0.35, "The next six slides explain the principles; measurements follow.", 15, False, GREY, italic=True)
 footer(s)
 
-# --- M1 ---
-s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
-header(s, "PART 4  ·  METHOD 1", "Physics features (v623)", "use the quantities a physicist would cut on")
-rect(s, MX, 1.65, 6.4, 3.9, WHITE, line=ICE)
-tb(s, MX + 0.25, 1.78, 5.9, 0.3, "two tracks from a common vertex", 16, True, NAVY)
-rect(s, 1.0, 4.7, 0.2, 0.2, NAVY, shape=MSO_SHAPE.OVAL)
-a = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1.1), Inches(4.8), Inches(3.6), Inches(2.6))
-b = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1.1), Inches(4.8), Inches(5.2), Inches(3.2))
-for ln in (a, b): ln.line.color.rgb = NAVY; ln.line.width = Pt(2.4)
-rect(s, 1.85, 3.95, 0.7, 0.35, RGBColor(0xD8, 0xDE, 0xEA))
-tb(s, 2.05, 3.98, 0.4, 0.28, "θ", 15, True, NAVY)
-tb(s, MX + 0.25, 5.15, 5.9, 0.35, "dR · dz · DOCA · |Δz| · collinearity", 17, False, GREY)
-rect(s, 7.25, 1.65, 5.45, 3.9, LIGHT); rect(s, 7.25, 1.65, 0.06, 3.9, TEAL)
-bullets(s, 7.5, 1.95, 5.0, 3.4, ["Physical basis, so cuts are meaningful", "Computed locally, not inherited", "Result: best AUC, no chain gain"], BODY, NAVY, 14)
-note(s, "Before this change the pruning score used raw inherited features. Here we recompute five geometric quantities per track pair",
-        "and feed them to the same MLP.", 6.4)
-footer(s)
+# --- method pages (rewritten: real explanatory text, two pages per method) ---
+def _lines(text, width, size=17):
+    cpl = max(18, int(width * 144 / size))
+    n = 0
+    for part in text.split("\n"):
+        n += max(1, -(-len(part) // cpl))
+    return n
 
-# --- M2 ---
-s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
-header(s, "PART 4  ·  METHOD 2", "Pairwise ranking (v631)", "optimise the ordering, not the absolute score")
-pic(s, P_RANK, 0.8, 1.75, w=5.6)
-rect(s, 6.9, 1.65, 5.8, 2.4, LIGHT); rect(s, 6.9, 1.65, 0.06, 2.4, TEAL)
-bullets(s, 7.15, 1.9, 5.35, 2.0, ["0.1% of edges are true", "BCE never orders candidates", "Ordering is what a threshold uses"], 22, NAVY, 10)
-formula(s, 6.9, 4.2, 5.8, 1.1, "L = softplus( -(s_true - s_fake)/τ )")
-tb(s, 6.9, 5.45, 5.8, 0.4, "hard negatives share a track with the positive", 15, False, GREY, italic=True)
-note(s, "The loss compares a true pair against a fake pair that shares one track, so it learns to resolve genuine competition",
-        "instead of the easy background.", 6.1)
-footer(s)
 
-# --- M3 ---
-s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
-header(s, "PART 4  ·  METHOD 3", "The operating point (v631)", "the threshold decides which chains enter")
-pic(s, P_THR, 0.8, 1.75, w=5.6)
-rect(s, 6.9, 1.65, 5.8, 2.9, LIGHT); rect(s, 6.9, 1.65, 0.06, 2.9, TEAL)
-bullets(s, 7.15, 1.9, 5.35, 2.5, ["Lower threshold keeps more true pairs", "It also admits more background", "So this is a trade, not a free gain"], 22, NAVY, 10)
-formula(s, 6.9, 4.7, 5.8, 1.1, "kept = { e : s_e > thr }")
-note(s, "The threshold is not a detail: it decides how many truth chains reach the reconstruction at all.", 6.05)
-footer(s)
+def method_page(kicker, title, sub, blocks, visual=None, visual_w=5.2, key=None):
+    s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
+    header(s, kicker, title, sub)
+    tw = 6.35 if visual is not None else 12.1
+    y = 1.62
+    for label, text in blocks:
+        tb(s, MX, y, tw, 0.28, label, 14, True, TEAL)
+        h = _lines(text, tw, 16) * 16 * 1.3 / 72 + 0.06
+        tb(s, MX, y + 0.28, tw, h, text, 16, False, NAVY, line=1.25)
+        y += 0.28 + h + 0.16
+    if visual is not None:
+        if callable(visual):
+            visual(s)
+        else:
+            pic(s, visual, W - 0.55 - visual_w, 1.62, w=visual_w)
+    if key:
+        rect(s, MX, 6.45, 12.1, 0.5, LIGHT); rect(s, MX, 6.45, 0.06, 0.5, TEAL)
+        tb(s, 0.8, 6.53, 11.7, 0.36, key, 19, True, NAVY)
+    footer(s)
 
-# --- M4 ---
-s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
-header(s, "PART 4  ·  METHOD 4", "Competition and exclusivity (v648)", "a track has only one true partner")
-rect(s, MX, 1.65, 6.3, 3.9, WHITE, line=ICE)
-cx, cy = MX + 1.15, 3.55
-rect(s, cx, cy, 0.22, 0.22, NAVY, shape=MSO_SHAPE.OVAL)
-tb(s, cx - 0.2, cy + 0.28, 0.9, 0.28, "track", 15, False, GREY)
-for x, y, col, lab in [(3.3, 2.1, TEAL, "0.91"), (4.4, 2.9, "#9AA3B2", "0.88"),
-                       (4.5, 4.1, "#9AA3B2", "0.55"), (3.4, 4.85, "#9AA3B2", "0.31")]:
-    ln = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(cx + 0.22), Inches(cy + 0.11), Inches(x + 0.09), Inches(y + 0.09))
-    ln.line.color.rgb = _rgb(col); ln.line.width = Pt(1.8)
-    rect(s, x, y, 0.18, 0.18, col, shape=MSO_SHAPE.OVAL)
-    tb(s, x + 0.24, y - 0.03, 0.8, 0.26, lab, 15, False, GREY)
-rect(s, 7.1, 1.65, 5.6, 3.9, LIGHT); rect(s, 7.1, 1.65, 0.06, 3.9, TEAL)
-bullets(s, 7.35, 1.95, 5.15, 2.6, ["Per-edge scoring is blind to rivals", "Exclusivity is an assignment problem", "New features: max, mean, rank"], 22, NAVY, 10)
-note(s, "Each edge is described by its own score plus summary statistics of the competing edges of the same track, so exclusivity",
-        "becomes visible to a per-edge model.", 6.4)
-formula(s, 7.1, 4.75, 5.6, 0.75, "f_e = [ s_e , max s_e' , rank ]", 17)
-footer(s)
 
-# --- M5a: attention in plain words ---
+def sk_feat(s):
+    x0 = 7.35
+    rect(s, x0, 1.62, 5.4, 3.6, WHITE, line=ICE)
+    tb(s, x0 + 0.2, 1.72, 5.0, 0.28, "one track pair", 14, True, NAVY)
+    rect(s, x0 + 0.55, 4.35, 0.18, 0.18, NAVY, shape=MSO_SHAPE.OVAL)
+    tb(s, x0 + 0.78, 4.3, 0.8, 0.25, "vertex", 11, False, GREY)
+    a = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x0 + 0.64), Inches(4.44), Inches(x0 + 2.35), Inches(2.55))
+    b = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x0 + 0.64), Inches(4.44), Inches(x0 + 3.95), Inches(3.1))
+    for ln in (a, b): ln.line.color.rgb = NAVY; ln.line.width = Pt(2.4)
+    rect(s, x0 + 1.45, 3.5, 0.62, 0.3, RGBColor(0xD8, 0xDE, 0xEA))
+    tb(s, x0 + 1.6, 3.52, 0.4, 0.25, "θ", 12, True, NAVY)
+    ln = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x0 + 2.3), Inches(2.62), Inches(x0 + 3.9), Inches(3.06))
+    ln.line.color.rgb = RED; ln.line.width = Pt(1.8); ln.line.dash_style = 4
+    tb(s, x0 + 2.55, 2.95, 1.3, 0.25, "DOCA", 12, True, RED)
+    tb(s, x0 + 0.2, 4.75, 5.0, 0.35, "dR · dz · |Δz| · collinearity", 12, False, GREY)
+
+
+def sk_comp(s):
+    x0 = 7.35
+    rect(s, x0, 1.62, 5.4, 3.6, WHITE, line=ICE)
+    tb(s, x0 + 0.2, 1.72, 5.0, 0.28, "one track, four candidate partners", 14, True, NAVY)
+    cx, cy = x0 + 0.75, 3.35
+    rect(s, cx, cy, 0.2, 0.2, NAVY, shape=MSO_SHAPE.OVAL)
+    tb(s, cx - 0.25, cy + 0.26, 0.9, 0.25, "track", 11, False, GREY)
+    for x, yq, col, lab in [(x0 + 2.1, 2.15, TEAL, "0.91"), (x0 + 3.2, 2.95, "#9AA3B2", "0.88"),
+                            (x0 + 3.35, 4.0, "#9AA3B2", "0.55"), (x0 + 2.2, 4.7, "#9AA3B2", "0.31")]:
+        ln = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(cx + 0.2), Inches(cy + 0.1), Inches(x + 0.09), Inches(yq + 0.09))
+        ln.line.color.rgb = _rgb(col); ln.line.width = Pt(1.6)
+        rect(s, x, yq, 0.18, 0.18, col, shape=MSO_SHAPE.OVAL)
+        tb(s, x + 0.24, yq - 0.02, 0.7, 0.24, lab, 11, False, GREY)
+    tb(s, x0 + 0.2, 4.95, 5.0, 0.25, "the 0.88 fake beats most edges in the event", 11, False, GREY, italic=True)
+
+
+# M1-a
+method_page("PART 4  ·  METHOD 1 (1/2)", "Physics features: what the score is looking at",
+            "v623 · same network, better inputs",
+            [("The problem",
+              "The pruning MLP was fed features inherited from upstream code. Their names suggested geometry, "
+              "but several definitions did not match it — and one of them, DOCA, was simply wrong (Part 3)."),
+             ("The idea",
+              "Recompute, locally and from the track states, the five quantities a physicist would actually cut on. "
+              "No new head and no new layer: the same MLP, with inputs that mean what they say."),
+             ("The five quantities",
+              "dR — separation in the η–φ plane; dz — separation along the beam; DOCA — closest approach of the two "
+              "tracks; |Δz| — beam separation at that point; collinearity — cosine of the opening angle.")],
+            visual=sk_feat,
+            key="Better inputs, same decision rule.")
+
+# M1-b
+method_page("PART 4  ·  METHOD 1 (2/2)", "Physics features: what it bought, and what it did not",
+            "the representation improved before the decision did",
+            [("The measurement",
+              "AllParticles 14.5 → 14.3%, PerfectReco 9.5 → 9.6%. In terms of chains, nothing moved."),
+             ("But",
+              "Edge AUC rose to 0.974 — the best ranking quality of the whole line — and the hard-pool edge AP improved "
+              "as well. The information was clearly there."),
+             ("The lesson",
+              "A better representation is not yet a better partition. The loss and the threshold were still the old "
+              "ones, so the extra information never reached the decision. We kept v623 as the base and changed what "
+              "the score is optimised for next.")],
+            key="Representation improved; decision rule did not.")
+
+# M2-a
+method_page("PART 4  ·  METHOD 2 (1/2)", "The loss never looked at the ordering",
+            "v631 · pairwise ranking",
+            [("The imbalance",
+              "About 0.1% of the candidate edges are true. We compensate with pos_weight ≈ 700, which puts almost all "
+              "of the gradient on pushing true edges up and very little on anything else."),
+             ("What that misses",
+              "At inference we threshold the score, and the only thing that matters near the threshold is the "
+              "ordering of candidates. Two edges on the same side of the cut are indistinguishable to BCE even when "
+              "one is clearly better."),
+             ("Ranking instead",
+              "Compare a true pair with a fake pair that shares one track, and require a margin. The fake partner "
+              "is a real competitor, not easy background.")],
+            visual=P_RANK, key="L = softplus( -(s_true - s_fake) / τ )")
+
+# M2-b
+method_page("PART 4  ·  METHOD 2 (2/2)", "The operating point is part of the model",
+            "0.97 → 0.90, with the ranking term holding the background side",
+            [("The knob",
+              "Lowering the threshold admits more true pairs, and more background pairs. The shaded band on the right "
+              "is exactly that trade: the edges a 0.90 cut keeps but a 0.97 cut does not."),
+             ("Why we still did it",
+              "A chain destroyed at pruning can never be recovered, while contamination can in principle be resolved "
+              "later. At this stage recall is the more valuable currency, provided the background side is controlled."),
+             ("Result",
+              "AllParticles 14.3 → 19.8%, PerfectReco 9.6 → 13.3% — the largest single step in the line.")],
+            visual=P_THR, key="Same model, different operating point: +5.5 pp AllParticles.")
+
+# M3 engineering
+method_page("PART 4  ·  ENGINEERING", "Two fixes that are not new methods",
+            "remove what fails, then select on what you grade",
+            [("Remove",
+              "The event-count head cost 19% on its own and the PV-overlap injection cost 2.6%. Both were deleted "
+              "rather than tuned. Removing a bad term was worth more than adding two good ones."),
+             ("Select",
+              "The total loss mixes auxiliary terms, so the checkpoint with the lowest loss is not the one with the "
+              "best pruning quality. We select on pruning AP, which is what the downstream chain reconstruction "
+              "actually consumes."),
+             ("Result",
+              "Across v631 → v640 this is 14.3 → 22.6% AllParticles, with the ranking change above already in place.")],
+            key="Deleting and selecting beat adding.")
+
+# M4-a
+method_page("PART 4  ·  METHOD 3 (1/2)", "A track has only one true partner",
+            "v648 · competition and exclusivity",
+            [("The blind spot",
+              "Per-edge scoring judges each pair in isolation. In the sketch the fake partner scores 0.88 — higher "
+              "than most edges in the event — simply because it lies close to the track."),
+             ("The physical constraint",
+              "Exclusivity: a track belongs to one true pair. If another candidate is much stronger, this edge is "
+              "probably fake no matter how good it looks on its own."),
+             ("How we expose it",
+              "Describe each edge by its own score plus summary statistics of the competing edges of the same track. "
+              "This turns exclusivity into something a per-edge model can see.")],
+            visual=sk_comp, key="The competitor set is evidence.")
+
+# M4-b
+method_page("PART 4  ·  METHOD 3 (2/2)", "What the competitor features bought",
+            "the first block that helps ranking and reconstruction together",
+            [("The features",
+              "For an edge e of a track: its own score, the maximum and mean score among the track's other edges, "
+              "and its rank within that set. Cheap and local — no extra graph pass."),
+             ("The measurement",
+              "AllParticles 26.0 → 27.0%, PerfectReco 17.8 → 18.1%. Modest in chains, but the hard-pool edge AP "
+              "reaches 0.668, the best of the whole line."),
+             ("Why it still matters",
+              "Every earlier block improved either ranking or reconstruction. This is the first one that improves "
+              "both, which is what we want from a representation that feeds a single decision.")],
+            key="Ranking and chains finally move together.")
+
+# M5-a
 s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
-header(s, "PART 4  ·  METHOD 5 (1/2)", "Attention, in plain words", "each candidate pair asks the others: did you take my track?")
-rect(s, MX, 1.65, 12.1, 2.5, WHITE, line=ICE)
+header(s, "PART 4  ·  METHOD 4 (1/2)", "Attention, in plain words", "v651 · each candidate pair asks the others a question")
+rect(s, MX, 1.62, 12.1, 2.35, WHITE, line=ICE)
 xs = [MX + 1.0, MX + 3.3, MX + 5.6, MX + 7.9, MX + 10.2]
-y0 = 3.05
+y0 = 2.95
 for i, x in enumerate(xs):
-    rect(s, x - 0.28, y0 - 0.28, 0.56, 0.56, TEAL, shape=MSO_SHAPE.OVAL)
-    tb(s, x - 0.25, y0 - 0.2, 0.5, 0.4, f"e{i+1}", 17, True, WHITE, align=PP_ALIGN.CENTER)
+    rect(s, x - 0.27, y0 - 0.27, 0.54, 0.54, TEAL, shape=MSO_SHAPE.OVAL)
+    tb(s, x - 0.24, y0 - 0.19, 0.48, 0.38, f"e{i+1}", 17, True, WHITE, align=PP_ALIGN.CENTER)
 for i in range(len(xs) - 1):
-    ln = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(xs[i] + 0.3), Inches(y0), Inches(xs[i + 1] - 0.32), Inches(y0))
+    ln = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(xs[i] + 0.29), Inches(y0), Inches(xs[i + 1] - 0.31), Inches(y0))
     ln.line.color.rgb = RGBColor(0x8E, 0xC9, 0xC0); ln.line.width = Pt(2)
-tb(s, MX + 0.2, 3.55, 11.8, 0.4, "the five candidate track pairs of one event", 15, False, GREY, italic=True)
-bullets(s, MX, 4.45, 12.1, 2.2, ["A track can only belong to one true pair", "So each pair must know what the others claim", "Attention is exactly that exchange"], BODY, NAVY, 14)
-note(s, "Attention runs on the line graph: its nodes are candidate track pairs, not tracks. Each pair aggregates information from",
-        "the other pairs of the same event.", 6.4)
+tb(s, MX + 0.2, 3.45, 11.8, 0.35, "the five candidate track pairs of one event", 15, False, GREY, italic=True)
+tb(s, MX, 4.15, 6.0, 1.9,
+   "A track can belong to one true pair, so the pairs are not independent: if e2 is real, e1 is probably not. "
+   "Attention is the mechanism that lets each pair look at the others and revise its own score.\n\n"
+   "Without that exchange, every edge is judged alone — which is exactly the blind spot of Method 3.", 17, False, NAVY, line=1.3)
+rect(s, 7.0, 4.15, 5.7, 1.9, LIGHT); rect(s, 7.0, 4.15, 0.06, 1.9, TEAL)
+tb(s, 7.25, 4.28, 5.25, 1.65,
+   "This is why the layer runs on the line graph: its nodes are candidate pairs, not tracks.\n\n"
+   "In the next page, q / k / v and the geometry term b that makes it work.", 15, False, NAVY, line=1.3)
 footer(s)
 
-# --- M5b: the mechanism + geometry prior ---
+# M5-b
 s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
-header(s, "PART 4  ·  METHOD 5 (2/2)", "The mechanism, and the geometric prior", "why the bias is the active ingredient")
-formula(s, MX, 1.65, 6.2, 2.35,
+header(s, "PART 4  ·  METHOD 4 (2/2)", "The mechanism, and the geometric prior", "why the bias is the active ingredient")
+formula(s, MX, 1.62, 5.9, 2.25,
         "q_i = W_q h_i      k_j = W_k h_j\n"
         "α_ij = softmax( q_i·k_j / √d\n"
         "                + b_ij )\n"
-        "h'_i = Σ_j α_ij v_j", 18)
-rect(s, 7.0, 1.65, 5.7, 2.35, LIGHT); rect(s, 7.0, 1.65, 0.06, 2.35, TEAL)
-bullets(s, 7.25, 1.9, 5.25, 2.0, ["q, k, v: what I ask, what I offer, what I pass", "α: how much attention", "b: a learned map of geometry"], 19, NAVY, 8)
-tb(s, MX, 4.15, 6.2, 0.7, "Without geometry, attention has\nnothing physical to attend to.", 18, True, RED, line=1.15)
-pic(s, P_BIAS, 7.0, 4.15, w=5.7)
-tb(s, MX, 4.8, 6.1, 1.6, "Ablation: the same layer, with and without b_ij.\nOnly the version with geometry moves the reconstruction.", 17, False, NAVY, line=1.2)
-note(s, "q, k and v are learned projections of the pair representation; softmax decides how much each neighbour contributes.", 6.45)
+        "h'_i = Σ_j α_ij v_j", 17)
+tb(s, MX, 4.0, 5.9, 2.2,
+   "q asks, k offers, v is what gets passed on; α is how much each neighbour contributes, and b is a learned map "
+   "of the pair's geometry (dR, dz, DOCA).\n\n"
+   "The output projection is zero-initialised, so the layer starts as the identity — every change it makes is "
+   "learned, not injected.", 16, False, NAVY, line=1.3)
+pic(s, P_BIAS, 6.75, 1.75, w=5.9)
+tb(s, 6.75, 5.05, 5.9, 1.3,
+   "Ablation: the same layer without b_ij gains nothing (v637); with it, +4.5 pp on AllParticles. "
+   "So the attention is not the gain — the geometry fed into it is.", 16, False, GREY, italic=True, line=1.3)
 footer(s)
 
-# --- geometric prior explainer ---
+# geometric prior
 s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
 header(s, "PART 4  ·  BACKGROUND", "What a geometric prior is, and why it is a bias", None)
-bullets(s, MX, 1.75, 12.1, 2.6,
-        ["Attention alone compares learned vectors — it has no notion of distance",
-         "A prior injects known physics into the attention weights",
-         "Here: dR, dz, DOCA are mapped to a scalar b_ij and added before softmax"],
-        BODY, NAVY, 16)
-formula(s, MX, 4.35, 7.2, 1.0, "score_ij = q_i·k_j/√d  +  b_ij", 20)
-rect(s, 8.1, 4.35, 4.6, 1.55, LIGHT); rect(s, 8.1, 4.35, 0.06, 1.55, TEAL)
-tb(s, 8.3, 4.48, 4.2, 1.3, "Zero-initialised output: the layer starts as identity,\nso any change is learned, not injected.", 14, False, NAVY, line=1.25)
+tb(s, MX, 1.7, 6.2, 3.0,
+   "Attention compares learned vectors. It has no notion of distance, angle or vertex quality — nothing in "
+   "q·k knows that two tracks come from a displaced vertex.\n\n"
+   "A prior injects that knowledge directly into the attention weights: dR, dz and DOCA are mapped to a scalar "
+   "b_ij and added before the softmax, so geometry decides who listens to whom.", 16.5, False, NAVY, line=1.3)
+formula(s, 7.0, 1.75, 5.7, 1.0, "score_ij = q_i·k_j/√d  +  b_ij", 20)
+rect(s, 7.0, 3.0, 5.7, 2.2, LIGHT); rect(s, 7.0, 3.0, 0.06, 2.2, TEAL)
+tb(s, 7.25, 3.15, 5.2, 1.95,
+   "Why not just add the geometry as a feature?\n\n"
+   "Then the network may ignore it. Inside the attention score it cannot: it directly reshapes the weights.", 15.5, False, NAVY, line=1.3)
 footer(s)
 
-# --- ablation evidence ---
+# ablation evidence
 s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
 header(s, "PART 4  ·  EVIDENCE", "How we know a change is real", "one variable, same base, same threshold")
-pic(s, P_NEG, 0.8, 1.8, w=6.4)
-rect(s, 7.5, 1.7, 5.2, 3.6, LIGHT); rect(s, 7.5, 1.7, 0.06, 3.6, TEAL)
-bullets(s, 7.75, 1.95, 4.8, 3.1, ["Same checkpoint, same data", "One variable per run", "Controls decide: attention alone, node-pool mask"], 20, NAVY, 10)
-tb(s, MX, 5.55, 12.1, 0.8, "A control that lands at zero is the strongest evidence that the extra ingredient is doing the work.", 18, False, GREY, italic=True)
+pic(s, P_NEG, 0.7, 1.7, w=6.3)
+tb(s, 7.3, 1.7, 5.45, 3.4,
+   "The protocol is deliberately boring: same checkpoint, same data, same threshold, one variable per run.\n\n"
+   "The controls decide. Attention without geometry lands at zero; a mask built on node pooling lands below zero; "
+   "predicting slots directly destroys 24 pp.\n\n"
+   "When the control lands at zero, the extra ingredient is doing the work.", 15.5, False, NAVY, line=1.3)
 footer(s)
 
 # --- measurements ---
@@ -622,6 +736,20 @@ pic(s, "report_figs/reco_fixed/F2_by_nB.png", 0.7, 1.55, w=11.9)
 note(s, "Exact reconstruction per event class. Single-B events are the relevant case for triggering and for most analyses; "
         "multi-B events remain harder, and three-B and above are rare enough that we do not optimise for them.", 5.8)
 footer(s)
+
+method_page("PART 4  ·  NEGATIVE RESULTS", "What we tried and discarded", "each cost at least one controlled run",
+            [("Bigger capacity",
+              "Wider latent spaces, more heads, more epochs. On a saturated base none of them moved the chains — "
+              "consistent with what the previous round had already shown."),
+             ("Auxiliary targets",
+              "Mass, structure and source heads on the same backbone. They regularise the representation but do not "
+              "transfer to reconstruction efficiency."),
+             ("Geometry as a gate",
+              "Replacing learned pruning with a physical window: five variants, all negative, down to −7.4 pp. "
+              "A window alone cannot separate signal from background in this environment."),
+             ("Loose chain rewards",
+              "Rewards that keep more chains raise the found fraction and the contaminated fraction together. None "
+              "of them raised exact reconstruction.")])
 
 s = prs.slides.add_slide(BLANK); rect(s, 0, 0, W, H, WHITE)
 header(s, "SUMMARY", "Where we are", None)
