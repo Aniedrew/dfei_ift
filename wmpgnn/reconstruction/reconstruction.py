@@ -395,8 +395,6 @@ class EventReconstruction:
         # now multiprocess the reco
         args_list = [(graph.cpu(), pv_desc, ft_desc) for graph, pv_desc, ft_desc in
                      zip(graphs, precomputed_pv_desc, precomputed_ft_desc)]
-        # [2026-10-19] 诊断: 若事件数为 0, 后续 collect_results 会在空列表上 concat 报错
-        print(f"[reco-diag] events_to_reco={len(args_list)} (graphs={len(graphs)})", flush=True)
         with ThreadPool(processes=4) as pool:
             res = list(tqdm(pool.imap(self.reconstruct_single_evt, args_list), total=len(args_list),
                             desc="Reconstructing events", leave=False))
@@ -405,7 +403,15 @@ class EventReconstruction:
             try:
                 self.sig_df.append(pd.DataFrame(r[0]))
                 self.evt_df.append(pd.DataFrame([r[1]]))
-            except:
+            except Exception as _e:
+                # [2026-10-19] 不再静默吞异常: 前 3 次打印完整堆栈, 否则会退化成
+                #   后续 pd.concat([]) 的 "No objects to concatenate", 掩盖真实原因
+                _n = getattr(self, "_reco_err_n", 0)
+                if _n < 3:
+                    import traceback
+                    traceback.print_exc()
+                    print(f"[reco] WARN 单事件重建结果解析失败: {type(_e).__name__}: {_e}", flush=True)
+                self._reco_err_n = _n + 1
                 continue
             
 

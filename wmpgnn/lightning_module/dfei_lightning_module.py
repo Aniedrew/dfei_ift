@@ -1417,10 +1417,6 @@ class DFEILightningModule(L.LightningModule):
                 if self.slot_head is not None:
                     m, o = self.slot_head(hn)
                     l2, _, _ = slot_mask_loss(m, o, y_e)
-                    # [2026-10-19] 梯度锚: 冻主干时若该损失恰为常数, 反传会报
-                    #   "element 0 ... does not require grad"; 加一个零值但可导的锚点
-                    _anc = sum(_p.sum() for _p in self.slot_head.parameters() if _p.requires_grad)
-                    l2 = l2 + 1e-6 * _anc
                     _rw = float(self.configs.get("part_relax_weight", 0.0))
                     if _rw > 0:
                         from wmpgnn.model.partition_heads import partition_relax_loss
