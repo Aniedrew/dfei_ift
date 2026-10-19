@@ -1284,6 +1284,9 @@ class DFEILightningModule(L.LightningModule):
                     if same:
                         compatible[k] = state_dict[k]
                 return super().load_state_dict(compatible, strict=False)
+        # [2026-10-19] ckpt 中 criteria 的 pos_weight 是训练期常数缓冲; 评测配置未设时会成为
+        #   "unexpected key" 并使 strict 加载失败 -> 直接丢弃(非学习参数, 不影响推理)
+        state_dict = {_k: _v for _k, _v in state_dict.items() if not str(_k).endswith(".pos_weight")}
         return super().load_state_dict(state_dict, strict=strict)
 
     def forward(self, batch):
