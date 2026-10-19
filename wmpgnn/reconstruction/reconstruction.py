@@ -112,6 +112,13 @@ class EventReconstruction:
         # Output weights
         node_weights = outputs["node_weights"]
         edge_weights = outputs["edge_weights"]
+        # [2026-10-19] 兼容: 某些配置下 edge_weights 返回的是按边类型索引的 dict/storage,
+        #   直接当 tensor 用会在 edge_weights[bool_mask] 处抛 KeyError
+        if not torch.is_tensor(edge_weights):
+            try:
+                edge_weights = edge_weights[('tracks', 'to', 'tracks')]
+            except Exception:
+                edge_weights = next(iter(edge_weights.values()))
         lca = outputs[("tracks", "tracks")].lca
 
         track_batch = outputs["tracks"].batch
