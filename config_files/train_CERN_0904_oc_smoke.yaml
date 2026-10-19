@@ -206,6 +206,9 @@ inference:
   derived_vertex_geom: true
   derived_comp: true
   dz_norm_dict: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/normalization_dict.pt
+  oc_head: true
+  oc_loss_weight: 1.0
+  freeze_backbone: true
 settings:
   batch_size: 8
   calibration: false

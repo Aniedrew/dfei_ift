@@ -648,6 +648,14 @@ class DFEILightningModule(L.LightningModule):
             self.signal += "__" + configs["evaluate"]["over_write"]
 
         self.configs = configs["inference"]
+        # [2026-10-18] 防呆: 开关若只写在 settings/DFEI 而不在 inference, 将静默失效 (已踩过一次)
+        try:
+            _miss = [k for k in ("oc_head", "slot_head", "freeze_backbone", "partition_decode", "seqrec_decode")
+                     if any(k in (configs.get(_s) or {}) for _s in ("settings", "DFEI")) and k not in self.configs]
+            if _miss:
+                print(f"[WARN][config] 这些开关只在 settings/DFEI 里, inference 里没有 -> 不会生效: {_miss}", flush=True)
+        except Exception:
+            pass
         self.model = model
         self.use_pid = configs["DFEI"]["use_pid"]  # str holding what to do with pid information for DFEI
         # GN blocks 配置 (B2 温度退火参数读取; 兼容无该段的旧配置)

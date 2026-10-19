@@ -209,6 +209,13 @@ inference:
   derived_vertex_geom: true
   derived_comp: true
   dz_norm_dict: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/normalization_dict.pt
+  slot_head: true
+  slot_loss_weight: 1.0
+  slot_k: 4
+  slot_mask_thr: 0.5
+  freeze_backbone: true
+  partition_decode: true
+  event_count_weight: 1.0
 settings:
   batch_size: 8
   calibration: false

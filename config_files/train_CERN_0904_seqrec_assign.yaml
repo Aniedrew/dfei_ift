@@ -206,6 +206,9 @@ inference:
   derived_vertex_geom: true
   derived_comp: true
   dz_norm_dict: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/normalization_dict.pt
+  freeze_backbone: true
+  seqrec_decode: assign
+  seqrec_assign_thr: 0.5
 settings:
   batch_size: 8
   calibration: false
