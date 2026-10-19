@@ -1284,10 +1284,25 @@ class DFEILightningModule(L.LightningModule):
                     if same:
                         compatible[k] = state_dict[k]
                 return super().load_state_dict(compatible, strict=False)
-        # [2026-10-19] ckpt 中 criteria 的 pos_weight 是训练期常数缓冲; 评测配置未设时会成为
-        #   "unexpected key" 并使 strict 加载失败 -> 直接丢弃(非学习参数, 不影响推理)
-        state_dict = {_k: _v for _k, _v in state_dict.items() if not str(_k).endswith(".pos_weight")}
-        return super().load_state_dict(state_dict, strict=strict)
+        # [2026-10-19] 严格加载改为"白名单+strict=False":
+        #   ckpt 与当前模型在 criteria.pos_weight 这类常数缓冲上可能不一致(训练配置 vs 评测配置),
+        #   只加载两边都存在且形状一致的键, 其余(缺/多)打印出来但不中断。
+        _cur = self.state_dict()
+        _filt, _dropped = {}, []
+        for _k, _v in state_dict.items():
+            if _k not in _cur:
+                _dropped.append(_k); continue
+            try:
+                if tuple(_v.shape) != tuple(_cur[_k].shape):
+                    _dropped.append(_k); continue
+            except RuntimeError:
+                pass
+            _filt[_k] = _v
+        _miss = [k for k in _cur if k not in _filt]
+        if _dropped or _miss:
+            print(f"[load-relax] strict 降级: 多余 {len(_dropped)} 项, 缺失 {len(_miss)} 项 "
+                  f"(缺失项保持初始化)", flush=True)
+        return super().load_state_dict(_filt, strict=False)
 
     def forward(self, batch):
         if self.use_pid == "realistic":  # only for pythia
