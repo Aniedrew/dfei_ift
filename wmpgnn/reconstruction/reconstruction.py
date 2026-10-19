@@ -395,6 +395,8 @@ class EventReconstruction:
         # now multiprocess the reco
         args_list = [(graph.cpu(), pv_desc, ft_desc) for graph, pv_desc, ft_desc in
                      zip(graphs, precomputed_pv_desc, precomputed_ft_desc)]
+        # [2026-10-19] 诊断: 若事件数为 0, 后续 collect_results 会在空列表上 concat 报错
+        print(f"[reco-diag] events_to_reco={len(args_list)} (graphs={len(graphs)})", flush=True)
         with ThreadPool(processes=4) as pool:
             res = list(tqdm(pool.imap(self.reconstruct_single_evt, args_list), total=len(args_list),
                             desc="Reconstructing events", leave=False))
