@@ -1,0 +1,24 @@
+settings:
+  # 公开 LHCb 碰撞数据 (DFEI 论文 arXiv:2304.08610 用的那一批, 与 v2x/v4x 同源)
+  data_dir: /lzufs/user/guoqingxiang/DFEI_data/converted_LHCbcollision
+  sample:
+  - 00342442_inclusive
+  nfiles:
+  - 50
+  model_arch: DFEI
+  model: 651
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  node_prune_thr: 0.95
+  edge_prune_thr: 0.95
+evaluate:
+  sample:
+  - 00342442_inclusive
+  nfiles:
+  - 50
+  over_write: v651_public

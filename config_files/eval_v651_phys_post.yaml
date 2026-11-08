@@ -1,0 +1,32 @@
+settings:
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  model_arch: DFEI
+  model: 651
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  # ==== D: 解码侧物理后处理 (零训练成本; 实现见 reconstruction._phys_post_filter) ====
+  # 链级判据: 电荷 |Σq|<=1 / 不变质量落在 (B0,Bs) ± tol / 至少 3 条径迹。
+  # 作用: 研究"物理过滤"对污染与效率的取舍 (链级过滤只会掉链, 不会提高 AllParticles,
+  #       用来看代价; 与 A/B/C 的训练式改造同批比较)。
+  phys_post: true
+  phys_mass_tol: 250.0
+  phys_charge_max: 1.0
+  phys_min_tracks: 3
+  phys_b_masses:
+  - 5279.6
+  - 5366.9
+evaluate:
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  over_write: v651_phys_post

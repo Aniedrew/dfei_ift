@@ -12,6 +12,67 @@ from wmpgnn.reconstruction.reco_helper import *
 from wmpgnn.reconstruction.quantity_adder import *
 
 
+def _forest_filter(senders, receivers, weight, n_nodes, thr=0.0):
+    """Kruskal 式最大生成森林: 按权重降序加边, 成环则丢弃, 权重 < thr 也丢弃。
+
+    输出边集无环 -> 每个节点最多一个父节点, 解码出的链是严格的树/森林
+    (对应依赖句法分析里 "图 -> 树" 的 arborescence 解码; 阈值负责砍弱边,
+    避免把不同真值链之间的假边也接进来)。
+    """
+    import numpy as np
+    if len(senders) == 0:
+        return np.zeros(0, dtype=int)
+    parent = list(range(int(n_nodes)))
+
+    def _find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    keep = []
+    for k in np.argsort(-np.asarray(weight, dtype=float)):
+        if float(weight[k]) < thr:
+            break
+        a, b = int(senders[k]), int(receivers[k])
+        ra, rb = _find(a), _find(b)
+        if ra == rb:
+            continue
+        parent[ra] = rb
+        keep.append(int(k))
+    return np.array(sorted(keep), dtype=int)
+
+
+def _component_labels(senders, receivers, n_nodes):
+    """把 (门控 + 森林筛选后的) 边集转成逐节点连通分量标签。
+
+    与 `_setpred_label` 同为"每节点一个整数标签, -1 = 不属于任何簇"，
+    可直接喂给 cluster_chains_from_labels。区别是划分来源：
+      label  模式 = 划分头的槽位 argmax  (硬划分)
+      forest 模式 = 门控后的最大生成森林连通分量 (由 pair_gate_thr 决定谁能连谁)
+    孤立节点 -> -1 (不进入任何链)。
+    """
+    import numpy as np
+    parent = list(range(int(n_nodes)))
+
+    def _find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in zip(np.asarray(senders, dtype=int), np.asarray(receivers, dtype=int)):
+        ra, rb = _find(int(a)), _find(int(b))
+        if ra != rb:
+            parent[ra] = rb
+    lab = np.array([_find(i) for i in range(int(n_nodes))], dtype=int)
+    # 只保留"至少两个节点"的分量 (链最少要两条径迹); 其余置 -1
+    uniq, cnt = np.unique(lab, return_counts=True)
+    keep = set(uniq[cnt >= 2].tolist())
+    lab = np.array([v if v in keep else -1 for v in lab], dtype=int)
+    return lab
+
+
 def _oracle_rewrite(selbool, tp, mode, frac=1.0):
     """[诊断] 用真值均匀改写剪枝选择, 量化"剪枝质量"对下游重建的价值。
 
@@ -314,13 +375,19 @@ class EventReconstruction:
             if self.configs.get("setpred_decode", False) or self.configs.get("partition_decode", False):
                 try:
                     _sp_all = getattr(outputs, "setpred_labels", None)
+                    _has_nodesel = node_expand or self.configs.get("node_prune", True)
                     if _sp_all is not None and i < len(_sp_all):
                         _fl = torch.as_tensor(_sp_all[i])
-                        _has_nodesel = node_expand or self.configs.get("node_prune", True)
                         if _has_nodesel:
                             graphs[i]._setpred_label = _fl[node_selbool.cpu()].long()
                         else:
                             graphs[i]._setpred_label = _fl.long()
+                    # 划分头逐节点 x 槽位概率 (供划分一致性门控); OC 头没有 -> None
+                    _sp_pr = getattr(outputs, "setpred_probs", None)
+                    if _sp_pr is not None and i < len(_sp_pr) and _sp_pr[i] is not None:
+                        _fp = torch.as_tensor(_sp_pr[i]).float()
+                        graphs[i]._setpred_prob = (_fp[node_selbool.cpu()]
+                                                   if _has_nodesel else _fp)
                 except Exception as e:
                     print(f"[setpred] WARN 标签挂载失败: {type(e).__name__}: {e}")
 
@@ -588,11 +655,57 @@ class EventReconstruction:
         ei = tt.edge_index
         arg = tt.lca.argmax(-1)
         keep = (arg > 0)
-        cols = {"senders": ei[0][keep].numpy(), "receivers": ei[1][keep].numpy(),
-                "LCA_dec": arg[keep].numpy()}
+        _keep_np = keep.detach().cpu().numpy()
+        snd = ei[0][keep].detach().cpu().numpy()
+        rcv = ei[1][keep].detach().cpu().numpy()
+        lcd = arg[keep].detach().cpu().numpy()
+
+        # 边权: 剪枝存活概率 x (1 - P(LCA=0)), 用于森林/门控解码
+        if tt.lca.dim() > 1:
+            _pt = (1.0 - torch.softmax(tt.lca.float(), dim=-1)[:, 0]).detach().cpu().numpy()
+        else:
+            _pt = tt.lca.detach().cpu().numpy()
+        wgt = _pt[_keep_np].astype(float)
+        _ew = getattr(graph, "_edge_w_reco", None)
+        if _ew is not None and int(_ew.reshape(-1).shape[0]) == int(_pt.shape[0]):
+            wgt = wgt * _ew.detach().cpu().numpy().reshape(-1)[_keep_np].astype(float)
+
+        # (3) 划分一致性门控: 两节点的槽位归属概率越不一致, 这条边越可能是跨链假边
+        #     [2026-10-30 FIX] 原实现直接用未归一化的 sigmoid(mask) 做内积,
+        #     并把 mask_thr 完全排除在门控之外 -> (a) 相似度不可比 (b) 背景节点照常连边。
+        #     现改为: 先按 mask_thr 把"不属于任何槽位"的节点置零 (与 decode_slots 的
+        #     dustbin 同义), 再按行归一化成槽位分布, 用余弦一致性判定同簇。
+        _thr = float(self.configs.get("pair_gate_thr", 0.0) or 0.0)
+        _probs = getattr(graph, "_setpred_prob", None)
+        _pgrp = str(self.configs.get("partition_group", "label") or "label").lower()
+        if _probs is not None:
+            P = _probs.numpy() if hasattr(_probs, "numpy") else np.asarray(_probs)
+            if P.ndim == 2 and P.shape[0] >= n_nodes:
+                P = P[:n_nodes].astype(float)
+                _mk = float(self.configs.get("slot_mask_thr", 0.5) or 0.5)
+                P[P.max(axis=1) < _mk] = 0.0
+                _bkg = P.sum(axis=1) <= 0.0
+                P = P / np.maximum(P.sum(axis=1, keepdims=True), 1e-9)
+                _m = ~(_bkg[snd] | _bkg[rcv])       # 背景节点不与任何节点连边
+                if _thr > 0:
+                    _sim = P @ P.T
+                    _m = _m & (_sim[snd, rcv] >= _thr)
+                snd, rcv, lcd, wgt = snd[_m], rcv[_m], lcd[_m], wgt[_m]
+
+        # (1) 树约束解码: 在候选边上取最大生成森林 (无环 + 权重阈值)
+        if str(self.configs.get("tree_decode", "") or "").lower() in ("forest", "mst"):
+            _kk = _forest_filter(snd, rcv, wgt, n_nodes,
+                                 float(self.configs.get("tree_thr", 0.0) or 0.0))
+            snd, rcv, lcd = snd[_kk], rcv[_kk], lcd[_kk]
+
+        cols = {"senders": snd, "receivers": rcv, "LCA_dec": lcd}
         labels = graph._setpred_label.detach().cpu().numpy().astype(int)
         if labels.shape[0] != n_nodes:
             labels = np.resize(labels, n_nodes)
+        if _pgrp == "forest":
+            # [2026-10-30] 划分来源换成"门控 + 森林"的连通分量:
+            # 只有门控认为同槽位的边才可能把节点连到一起 -> pair_gate_thr 才有真实作用
+            labels = _component_labels(snd, rcv, n_nodes)
         rc_dict, nclust = cluster_chains_from_labels(labels, pd.DataFrame(cols), particle_keys)
         return rc_dict, nclust
 
@@ -651,6 +764,49 @@ class EventReconstruction:
                                         metric=metric, cut=cut, linkage=linkage, lam=lam)
         return rc_dict, nclust
 
+    def _phys_post_filter(self, graph, rc_dict, particle_keys):
+        """[2026-11-08] D: 链级物理过滤 (电荷 / 不变质量窗 / 最少成员)。
+
+        配置 (均在 inference 段):
+          phys_post(true) / phys_b_masses([5279.6, 5366.9] MeV) / phys_mass_tol(250 MeV)
+          phys_charge_max(1) / phys_min_tracks(3)
+        质量用末态径迹动量和 π 质量重建 (末态含轻子/K 时用 π 质量近似, 只作粗窗)。
+        """
+        import numpy as _np
+        keys = ["px_reco", "py_reco", "pz_reco"]
+        if not all(k in self._nc for k in keys):
+            return rc_dict
+        x = graph['tracks'].x
+        p = x[:, :3].float().cpu().numpy()
+        sc = _np.asarray([self._ns[k] for k in keys], dtype=_np.float32)
+        ce = _np.asarray([self._nc[k] for k in keys], dtype=_np.float32)
+        p = p * sc + ce
+        q = x[:, 6].float().cpu().numpy() if x.shape[1] > 6 else _np.zeros(len(p), _np.float32)
+        key_to_idx = {int(k): i for i, k in enumerate(particle_keys)}
+        masses = [float(m) for m in (self.configs.get("phys_b_masses", [5279.6, 5366.9]) or [])]
+        tol = float(self.configs.get("phys_mass_tol", 250.0))
+        qmax = float(self.configs.get("phys_charge_max", 1.0))
+        nmin = int(self.configs.get("phys_min_tracks", 3))
+        m_pi = 139.57039
+
+        kept = {}
+        for ck, cluster in rc_dict.items():
+            idxs = [key_to_idx.get(int(n), -1) for n in cluster['node_keys']]
+            idxs = [i for i in idxs if i >= 0]
+            if len(idxs) < nmin:
+                continue
+            if abs(float(q[idxs].sum())) > qmax:
+                continue
+            px, py, pz = p[idxs, 0], p[idxs, 1], p[idxs, 2]
+            e = _np.sqrt(px ** 2 + py ** 2 + pz ** 2 + m_pi ** 2).sum()
+            m2 = e * e - float(px.sum()) ** 2 - float(py.sum()) ** 2 - float(pz.sum()) ** 2
+            m = float(_np.sqrt(max(m2, 0.0)))
+            if masses and min(abs(m - mb) for mb in masses) > tol:
+                continue
+            kept[ck] = cluster
+        graph._phys_post_info = {"n_in": len(rc_dict), "n_out": len(kept)}
+        return kept
+
     def reconstruct_single_evt(self, args):
         graph, pv_des, ft_des = args
 
@@ -658,12 +814,29 @@ class EventReconstruction:
         true_LCA = lca_truth_matrix(graph)
         n_part = graph['tracks'].x.shape[0]   # 事件内节点数 (各分支共用)
         if self.use_lca:
-            if self.configs.get("pv_cluster", False) and pv_des is not None:
+            # [2026-10-19] A1-A10: 设计空间解码 (同一组分数, 只换"分数->划分"的方式)
+            _dd = str(self.configs.get("design_decode", "") or "")
+            if _dd:
+                from wmpgnn.reconstruction.design_decode import decode_with
+                import torch as _torch
+                _lab = decode_with(_dd, graph, self.configs)
+                if _lab is not None:
+                    graph._setpred_label = _torch.as_tensor(_lab).long()
+                    rc_dict, r_nclust_order = self._reconstruct_setpred(graph)
+                    particle_keys = get_final_keys(graph).tolist()
+                else:
+                    reco_LCA = lca_reco_matrix(graph, mode="reco")
+                    particle_keys = get_final_keys(graph).tolist()
+                    rc_dict, r_nclust_order, _ = reconstruct_decay(reco_LCA, particle_keys)
+            elif self.configs.get("pv_cluster", False) and pv_des is not None:
                 # ==== 方案7: PV 分簇分层重建 ====
                 rc_dict, r_nclust_order = self._reconstruct_pv_clustered(graph, pv_des)
-            elif self.configs.get("setpred_decode", False) \
+            elif (self.configs.get("setpred_decode", False)
+                  or self.configs.get("partition_decode", False)) \
                     and getattr(graph, "_setpred_label", None) is not None:
-                # ==== 方向2: 用集合预测 (slot 归属) 取代连通分量 ====
+                # ==== 方向2 / M1-M2: 用集合预测或划分头 (OC / Slot) 的归属取代连通分量 ====
+                # [2026-10-26 FIX] 原来只认 setpred_decode; 配置写 partition_decode 时
+                # 标签已挂载却永远走不到这里 -> oc/slot 与基线逐行相同。
                 rc_dict, r_nclust_order = self._reconstruct_setpred(graph)
                 particle_keys = get_final_keys(graph).tolist()
             elif self.configs.get("seqrec_use", False) \
@@ -716,6 +889,17 @@ class EventReconstruction:
                 kept_ck = set(_kept.keys())
                 rc_dict = {ck: c for ck, c in rc_dict.items() if ck in kept_ck}
                 graph._chain_center_info = info
+
+        # ==== [2026-11-08] D: 解码侧物理后处理 (链级, 零训练成本) ====
+        # 只做物理判据过滤, 不改分数/阈值: 电荷守恒 (|Σq|<=charge_max) + 不变质量窗
+        # (用末态径迹动量和 π 质量重建, 落在任一 B 质量 ± tol 内) + 最少成员数。
+        # 注意: 链级过滤只能压低污染, 不会把 AllParticles/PerfectReco 变好 (掉链只会
+        # 变成"被剪掉"), 本臂用于量化"物理过滤的代价/收益", 与树约束解码同批比较。
+        if self.configs.get("phys_post", False) and rc_dict != {}:
+            try:
+                rc_dict = self._phys_post_filter(graph, rc_dict, particle_keys)
+            except Exception as e:
+                print(f"[phys_post] WARN: {type(e).__name__}: {e}")
 
         # ==== 链级 LCA 物理置信度判据 (可选): 剔除由低置信 LCA 边构成的链 ====
         # "最物理"判据: 真链的链内边应是模型高置信的非背景边; 噪声链是勉强/误判成的。

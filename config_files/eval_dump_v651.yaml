@@ -1,9 +1,9 @@
 settings:
-  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
+  data_dir: /lzufs/home/guoqingxiang/dfei/eval_arms/D_0904real/MC_normed
   sample:
-  - inclusive_00342451
+  - inclusive_BsToJpsiPhi_24922901
   nfiles:
-  - 20
+  - 4
   model_arch: DFEI
   model: 651
   ngpu: 1
@@ -18,47 +18,21 @@ settings:
 inference:
   LCA: true
   LCA_weights: true
-  chain_lca_ce: true
-  chain_lca_ce_weight: 1.0
-  chain_lca_conf_thr: 0.3
-  chain_lca_filter: true
-  chain_lca_loss: true
-  chain_lca_loss_weight: 2.0
-  chain_lca_margin: 0.3
-  edge_prune: true
-  edge_prune_thr: 0.95
-  edge_prune_weights: true
-  lca_class2_weight: 2.0
-  lca_weight: 10.0
   node_prune: true
-  node_prune_thr: 0.95
-  node_prune_weight: 10.0
   node_prune_weights: true
+  edge_prune: true
+  edge_prune_weights: true
   pv_asso: true
   pv_asso_weights: true
-  source_head: true
-  source_loss_weight: 5.0
-  edge_rank_weight: 10.0
-  edge_rank_nneg: 64
-  edge_dz_ip_canon: true
-  derived_prune: true
-  derived_triangle: true
-  chain_contrastive_weight: 0.5
-  derived_vertex_geom: true
-  derived_comp: true
-  dz_norm_dict: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/dfei_repo/preprocessing/normalization_dict.pt
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  model: 651
   dump_edges: report_figs/edge_dump/v651
   dump_tag: v651
   dump_max: 600
 evaluate:
   sample:
-  - inclusive_00342451
+  - inclusive_BsToJpsiPhi_24922901
   nfiles:
-  - 20
-  over_write: dump_v651
-  dump_edges: report_figs/edge_dump/v651
-  dump_tag: v651
-  dump_max: 600
-dump_edges: report_figs/edge_dump/v651
-dump_tag: v651
-dump_max: 600
+  - 4
+  over_write: 0904real

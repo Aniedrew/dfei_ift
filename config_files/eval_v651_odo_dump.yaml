@@ -1,0 +1,25 @@
+settings:
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  model_arch: DFEI
+  model: 651
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  # 只导出边分数/真值链, 供 CPU 端离线比较解码器 (grow / oracle@k / dag)
+  dump_edges: report_figs/edge_dump/v651
+  dump_max: 800
+  dump_tag: v651
+evaluate:
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  over_write: v651_odo_dump

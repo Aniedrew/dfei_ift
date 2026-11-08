@@ -1,0 +1,117 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=8.5in,paperheight=11in,left=0.9in,right=0.9in,top=0.85in,bottom=0.9in]{geometry}
+\usepackage{multicol}
+\usepackage{mathptmx}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+\captionsetup{font=small,labelfont=sc,labelsep=period,justification=justified,singlelinecheck=false,skip=4pt}
+\renewcommand{\figurename}{Fig}
+\renewcommand{\tablename}{Table}
+\titleformat{\section}{\normalfont\bfseries\large}{\Alph{section}.}{0.6em}{\MakeUppercase}
+\setlength{\columnsep}{0.28in}
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{10pt}
+\renewcommand{\baselinestretch}{0.97}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\newcommand{\All}{\ensuremath{\mathrm{AllParticles}}}
+\newcommand{\Perf}{\ensuremath{\mathrm{PerfectReco}}}
+
+\begin{document}
+
+\begin{center}
+{\large\bfseries Supplemental Material:\\[2pt] Where inclusive beauty-hadron reconstruction loses chains\par}
+\vspace{0.6em}
+{\small Q.~Guo\par}
+\end{center}
+
+\vspace{0.4em}
+\begin{multicols}{2}
+
+\section{DOCA sign error}
+
+Each track is approximated by a straight line through its production vertex $A$ with unit direction $u$ given by the momentum. For two tracks, the distance between the lines is $|w+t_1u_1-t_2u_2|$ with $w=A_1-A_2$. Writing $c=u_1\cdot u_2$, $d=w\cdot u_1$ and $e=w\cdot u_2$, the minimum satisfies
+\begin{equation}
+t_1=\frac{ce-d}{1-c^2},\qquad t_2=\frac{e-cd}{1-c^2},
+\end{equation}
+and the distance is evaluated at these parameters. The stored column used $t_1=-(d+ce)/(1-c^2)$, which is not a stationary point of the same expression. Since both expressions use the same two track lines, this is an algebraic sign error, not an alternative definition.
+
+The stored quantity is also not symmetric under exchange of the two tracks: 99.5\% of the ordered pairs differ from their reversed counterpart, and the correlation with the recomputed distance is 0.019. Replacing the column changes the efficiency from 14.5\% to 14.3\% and the edge AUC from 0.97 to 0.97; the reconstruction never used the column in a way that exposed the error.
+
+\section{Previous round and PV association}
+
+An earlier round on a different production sample moved the GNN side from 22.5\% to 36.7\% and then saturated. The two samples are not comparable, and no number from that round is used in the Letter.
+
+Figure~\ref{fig:pv} shows the PV association result. Four models trained on a sample with leakage give 13.1--14.0\% misassociation on corrected data (average 13.5\%); models retrained on the corrected sample give 8.6\%, against 10.15\% for the minIP baseline. The retrained model also uses an auxiliary PV head, and the two changes were introduced together, so the 4.9-point difference cannot be attributed to the head alone. The right panel shows the same comparison on signal tracks, where the baseline and the final model give 16.5\% and 14.9\% and minIP gives 20.0\%; the two panels use different track selections and different vertical ranges.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\columnwidth]{figs/pv.png}
+\caption{PV misassociation. Left: all tracks, for four old models, the retrained baseline and two later models; the dashed line is the minIP baseline. Right: signal tracks only.}
+\label{fig:pv}
+\end{figure}
+
+\section{Global edge ranking}
+
+Figure~\ref{fig:roc} shows the edge ROC for five stages on a common subset of 200 events. The global AUC is highest for the baseline (0.970) and slightly lower for the final model (0.953), while the chain efficiency moves in the opposite direction. The curves cross in the operating region: a global average is dominated by the many easily separated pairs, whereas the reconstruction depends on the few nearly degenerate ones, so the AUC is not the quantity that should be optimised.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\columnwidth]{figs/roc.png}
+\caption{Edge ROC on a 200-event subset for five stages of the round. The vertical line marks the operating region.}
+\label{fig:roc}
+\end{figure}
+
+\section{Score distributions}
+
+Figure~\ref{fig:d2} shows the edge-score distribution before and after the edge-context inputs. The signal distribution moves towards higher scores in the region above the cut, while the background distribution is only weakly modified; this is the behaviour expected from a change that acts on nearly degenerate pairs. The corresponding distribution for the attention step is shown in Fig.~5 of the Letter.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\columnwidth]{figs/dist_m2.png}
+\caption{Edge-score distribution before and after the edge-context inputs, for background (grey) and signal (green) pairs. The vertical line marks the 0.90 cut.}
+\label{fig:d2}
+\end{figure}
+
+\section{Composition of the cumulative path}
+
+Figure~\ref{fig:ledger} decomposes the efficiency into three exclusive categories for each stage: chains removed by pruning, chains reconstructed with extra tracks, and chains reconstructed exactly. The first step contains the cut, the ranking term, the checkpoint change and the three small input items; the following steps add vertex geometry, edge context and attention. The bar labels are rounded to integers, so they differ from the one-decimal values quoted in the Letter.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\columnwidth]{figs/decomp.png}
+\caption{Composition of the signal chains at each stage: pruned away (light grey), reconstructed with extra tracks (green), reconstructed exactly (blue).}
+\label{fig:ledger}
+\end{figure}
+
+\section{Definitions of the small items}
+
+\noindent\emph{minIP canonicalisation.} The $\Delta z\cdot$IP edge input is made independent of the arbitrary ordering of the two tracks, so that swapping $i$ and $j$ does not change the feature.
+
+\noindent\emph{Event bias.} One learned scalar per event is added to all pruning logits of that event, allowing a global shift of the working point per event.
+
+\noindent\emph{Derived and triangle inputs.} Additional edge features computed from the same inputs, including a triangle-transitivity term that uses a third track to test whether two pairs are consistent with a common vertex.
+
+\noindent\emph{Checkpoint on pruning AP.} Early stopping and model selection use the validation pruning average precision instead of the total loss. This changes which epoch is kept, not the training objective.
+
+\section{Implementation defects of the first assignment attempt}
+
+Three implementations were tried: object condensation, a slot head with masks, and an assignment decoder. All three returned results identical to the baseline. The causes were:
+\begin{enumerate}
+\item the decoded labels were attached to the graph but the assembly stage only accepted them when a different flag was set, so the connected-component path was always taken;
+\item the matching of slots to truth objects enumerated permutations and returned no assignment when an event contained more chains than slots, which aborted the loss for that batch;
+\item model selection monitored a backbone metric that does not depend on the new head, so the head was never selected.
+\end{enumerate}
+The three defects are fixed, the matching now uses a linear assignment that handles more objects than slots, and the partition loss is computed and monitored on validation data. The corrected runs are in progress; no result is reported.
+
+\end{multicols}
+\end{document}

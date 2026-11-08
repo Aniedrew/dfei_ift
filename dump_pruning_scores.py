@@ -10,6 +10,7 @@
 import argparse
 import os
 import sys
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -58,14 +59,14 @@ def main():
         batch = batch.to(dev)
         ei_in = batch[("tracks", "to", "tracks")].edge_index.detach().cpu().clone()
         tb = batch["tracks"].batch.detach().cpu().clone()
-        if module.use_pid == "true":
-            batch["tracks"].x = torch.cat([batch["tracks"].x, batch["tracks"].pid], dim=1)
         with torch.no_grad():
-            out = module.model(batch)
+            # 必须走 shared_step: 它会做 dz 方向规范化、derived_prune 派生特征挂载等
+            # 推理预处理。直接 module.model(batch) 会漏掉这些, 使 v631+ 的分数失真。
+            module.shared_step(batch, 0, defaultdict(list), mode="val")
         blk = module.model._blocks[-1]
         nw = blk.node_weights["tracks"].detach().cpu().squeeze(-1).numpy()
         ew = blk.edge_weights[("tracks", "to", "tracks")].detach().cpu().squeeze(-1).numpy()
-        graphs = out.to_data_list()
+        graphs = batch.to_data_list()
         ft_all = batch["tracks"].ft.detach().cpu().numpy().astype(int)
         y_all = batch[("tracks", "to", "tracks")].y.detach().cpu().numpy()
         for gid in range(int(tb.max().item()) + 1):

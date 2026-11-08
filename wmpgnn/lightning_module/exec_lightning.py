@@ -133,10 +133,14 @@ def evaluate(trainer, module, tst_loader=None, chunkloader=None):
     # 两个口径在 v614 上实测差 2.5pp (16.32 vs 13.81), 会让"同一次 run 自报指标"与"下游评估"不可比。
     # 这里改成优先 test best ckpt; 若 trainer 上没有可用的 checkpoint 回调则显式回退并打印。
     _ds = tst_loader if tst_loader is not None else chunkloader
-    try:
+    # [2026-10-20 FIX] enable_checkpointing=False 时没有 ModelCheckpoint, ckpt_path="best"
+    # 必然抛 ValueError; 之前靠 except 回退, 但异常已污染 trainer 状态, 后续 test 会崩。
+    # 这里先判断回调是否存在, 不存在就直接用已加载的 in-memory 权重 (load_module 已从
+    # get_bis_model 返回的 best ckpt 载入)。
+    _ckpt_cb = getattr(trainer, "checkpoint_callback", None)
+    if _ckpt_cb is None:
+        trainer.test(module, dataloaders=_ds)
+        print("[evaluate] 无 ModelCheckpoint, 使用已载入的 best ckpt 权重做测试", flush=True)
+    else:
         trainer.test(module, dataloaders=_ds, ckpt_path="best")
         print("[evaluate] 已使用 best ckpt (val_combined_loss 最小) 做测试", flush=True)
-    except Exception as _e:
-        print(f"[evaluate] ckpt_path='best' 不可用 ({type(_e).__name__}: {_e}); "
-              f"回退到末轮 in-memory 权重", flush=True)
-        trainer.test(module, dataloaders=_ds)

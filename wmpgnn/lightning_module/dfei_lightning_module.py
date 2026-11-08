@@ -15,6 +15,24 @@ from wmpgnn.performance.reco_accuracy import acc_four_class, obtain_reco_accurac
 from wmpgnn.performance.plot_results import plot_sig_pv_missasso, plot_sig_b_system_pv_missasso
 
 
+def _attach_pid(batch, use_pid):
+    """把 PID 拼到径迹节点特征上。
+
+    [2026-11-03] 公开样本 (converted_LHCbcollision) 没有 RICH `pid` 字段, 而模型是按
+    use_pid='true' 训练的 (输入 8+5 维)。缺字段时用 5 维全零占位, 保持输入维度不变,
+    效果等价于"没有 PID 信息", 而不是直接崩掉。
+    """
+    tr = batch["tracks"]
+    if use_pid == "realistic":  # only for pythia
+        tr.x = torch.cat([tr.x, tr.real_pid], dim=1)
+    elif use_pid == "true":  # mc response for lhcb or onehot for pythia
+        if "pid" in tr.keys():
+            pid = tr.pid
+        else:
+            pid = torch.zeros(tr.x.shape[0], 5, device=tr.x.device, dtype=tr.x.dtype)
+        tr.x = torch.cat([tr.x, pid], dim=1)
+
+
 def focal_bce_with_logits(logits, targets, pos_weight=None, gamma=2.0):
     """Focal BCE (Lin et al., 2017): 降低易分样本权重, 聚焦难分样本。
 
@@ -423,7 +441,17 @@ def derive_pruning_features(batch, nc, ns, use_triangle=False, use_vertex=False,
         if int(me.sum()) < 2:
             continue
         # 事件内 ΔR 分位: 有多大比例的(同事件)候选对比这一对更不共线 (0=最共线)
-        rk_dR[me] = (dR[me].unsqueeze(0) > dR[me].unsqueeze(1)).float().mean(1)
+        # [2026-11-08 FIX] 原式直接构造 m×m 矩阵, 公开数据集(事件内真值边可达数万)会 OOM
+        #   => 按行分块累加, 每块上限 ~2e8 个 bool 元素
+        _idx = me.nonzero(as_tuple=True)[0]
+        _dv = dR[_idx]
+        _m = _dv.numel()
+        _ch = max(1, int(2e8 // max(1, _m)))
+        _acc = torch.empty(_m, device=dev, dtype=pT.dtype)
+        for _s in range(0, _m, _ch):
+            _b = _dv[_s:_s + _ch]
+            _acc[_s:_s + _ch] = (_dv.unsqueeze(0) > _b.unsqueeze(1)).sum(1).to(pT.dtype) / _m
+        rk_dR[_idx] = _acc
         if not use_triangle:
             continue
         loc = torch.zeros(X.shape[0], dtype=torch.long, device=dev)   # 全局节点 id -> 事件内局部 id
@@ -1094,17 +1122,75 @@ class DFEILightningModule(L.LightningModule):
                 self.oc_head = OCHead(_dpart, emb_dim=int(self.configs.get("oc_emb_dim", 8)),
                                       hidden=int(self.configs.get("oc_hidden", 64)))
             if self.slot_use:
-                self.slot_head = SlotMaskHead(_dpart, n_slots=self.slot_k,
-                                              hidden=int(self.configs.get("slot_hidden", 64)))
+                if bool(self.configs.get("slot_attn", False)):
+                    from wmpgnn.model.partition_heads import SlotAttentionHead
+                    self.slot_head = SlotAttentionHead(
+                        _dpart, n_slots=self.slot_k,
+                        dim=int(self.configs.get("slot_dim", 64)),
+                        iters=int(self.configs.get("slot_iters", 3)),
+                        hidden=int(self.configs.get("slot_hidden", 64)))
+                    print(f"[partition] slot_attn=True iters={self.configs.get('slot_iters', 3)}",
+                          flush=True)
+                else:
+                    self.slot_head = SlotMaskHead(_dpart, n_slots=self.slot_k,
+                                                  hidden=int(self.configs.get("slot_hidden", 64)))
             print(f"[partition] OC={self.oc_use}(w={self.oc_loss_w}) Slot={self.slot_use}"
                   f"(w={self.slot_loss_w},K={self.slot_k}) d_node={_dpart}", flush=True)
-            # 冻结剪枝/主干: 只更新新头, 保证"pruning 定住"且增益可归因
-            if bool(self.configs.get("freeze_backbone", False)):
-                _nf = 0
-                for _p in self.model.parameters():
-                    if _p.requires_grad:
-                        _p.requires_grad = False; _nf += 1
-                print(f"[partition] freeze_backbone=True: 冻结主干参数 {_nf} 组, 只训练新头", flush=True)
+        # ==== [2026-11-08] 输出侧直接化 A/B/C (实现见 model/direct_heads.py 文件头) ====
+        # A vertex : 伪顶点 (生产点聚簇) 槽位分配 + 顶点弧 -> 森林合并
+        # B split  : same-chain 二分 + gap 有序三分类
+        # C anchor : 锚点 = 链根 (真值 root 监督), 逐径迹排他分配
+        # 缺省全关 -> 与 v651/v1721 逐位一致。
+        self.split_head_on = bool(self.configs.get("split_head", False))
+        self.anchor_head_on = bool(self.configs.get("anchor_head", False))
+        self.vertex_head_on = bool(self.configs.get("vertex_head", False))
+        self.split_head = None
+        self.anchor_head = None
+        self.vertex_head = None
+        self.arc_head = None
+        self.direct_decode = str(self.configs.get("direct_decode", "") or "").lower()
+        self.direct_loss_w = float(self.configs.get("direct_loss_w", 1.0))
+        self.split_gap_w = float(self.configs.get("split_gap_w", 1.0))
+        self.split_pos_w = float(self.configs.get("split_pos_weight", 10.0))
+        self.anchor_k = int(self.configs.get("anchor_k", 6))
+        self.vertex_k = int(self.configs.get("vertex_k", 16))
+        self.vertex_tol = float(self.configs.get("vertex_tol", 5.0))
+        self.vertex_pos_cols = [int(c) for c in (self.configs.get("vertex_pos_cols", [3, 4, 5]))]
+        self.direct_thr = float(self.configs.get("direct_thr", 0.5))
+        self.arc_thr = float(self.configs.get("arc_thr", 0.5))
+        if self.split_head_on or self.anchor_head_on or self.vertex_head_on:
+            from wmpgnn.model.direct_heads import SplitHead, AnchorHead, SlotArcHead
+            try:
+                _blk0 = self.model._blocks[-1]
+                _dn = int(getattr(_blk0, "_ndim", 16))
+                _de = int(getattr(_blk0, "_edim", 16))
+            except Exception:
+                _dn, _de = 16, 16
+            _dh = int(self.configs.get("direct_hidden", 64))
+            if self.split_head_on:
+                self.split_head = SplitHead(_dn, _de, hidden=_dh)
+            if self.anchor_head_on:
+                self.anchor_head = AnchorHead(_dn, hidden=_dh)
+            if self.vertex_head_on:
+                from wmpgnn.model.set_pred_head import SetPredHead
+                self.vertex_head = SetPredHead(_dn, _de, n_slots=self.vertex_k, hidden=_dh,
+                                               heads=4, assign_mode="softmax_bg", pairwise=False)
+                self.arc_head = SlotArcHead(_dn, hidden=_dh)
+            for _b in self.model._blocks:
+                _b._stash_emb = True
+            print(f"[direct] split={self.split_head_on} anchor={self.anchor_head_on} "
+                  f"vertex={self.vertex_head_on} decode={self.direct_decode!r} "
+                  f"d_node={_dn} d_edge={_de} thr={self.direct_thr} arc_thr={self.arc_thr}", flush=True)
+
+        # 冻结剪枝/主干: 只更新新头, 保证"pruning 定住"且增益可归因
+        # [2026-10-20 FIX] 从 OC/Slot 的 if 里移出来: seqrec 臂也需要冻结主干,
+        # 否则会退化成全量微调, 无法回答"只改输出"的问题。
+        if bool(self.configs.get("freeze_backbone", False)):
+            _nf = 0
+            for _p in self.model.parameters():
+                if _p.requires_grad:
+                    _p.requires_grad = False; _nf += 1
+            print(f"[freeze] freeze_backbone=True: 冻结主干参数 {_nf} 组, 只训练新头", flush=True)
 
         # ==== [2026-10-13] 方向4: 几何候选生成 (用物理量而非分类器决定候选集) ====
         # 动机: 现在 recall 由学出来的边二分类头决定, 漏一条真值边整条链报废 (AND 语义), 给不出
@@ -1208,7 +1294,11 @@ class DFEILightningModule(L.LightningModule):
             if not has_sp:
                 new_heads.append("set_pred_head")
         for _hn, _hobj in (("oc_head", getattr(self, "oc_head", None)),
-                           ("slot_head", getattr(self, "slot_head", None))):
+                           ("slot_head", getattr(self, "slot_head", None)),
+                           ("split_head", getattr(self, "split_head", None)),
+                           ("anchor_head", getattr(self, "anchor_head", None)),
+                           ("vertex_head", getattr(self, "vertex_head", None)),
+                           ("arc_head", getattr(self, "arc_head", None))):
             if _hobj is not None and not any(k.startswith(_hn + ".") for k in checkpoint.get("state_dict", {})):
                 new_heads.append(_hn)
         if new_heads:
@@ -1219,7 +1309,9 @@ class DFEILightningModule(L.LightningModule):
                 _all += list(self.seqrec_params.parameters())
             if getattr(self, "set_pred_head", None) is not None:
                 _all += list(self.set_pred_head.parameters())
-            for _hobj in (getattr(self, "oc_head", None), getattr(self, "slot_head", None)):
+            for _hobj in (getattr(self, "oc_head", None), getattr(self, "slot_head", None),
+                          getattr(self, "split_head", None), getattr(self, "anchor_head", None),
+                          getattr(self, "vertex_head", None), getattr(self, "arc_head", None)):
                 if _hobj is not None:
                     _all += list(_hobj.parameters())
             opt = self.optimizer_class(_all, **self.optimizer_params)
@@ -1305,10 +1397,7 @@ class DFEILightningModule(L.LightningModule):
         return super().load_state_dict(_filt, strict=False)
 
     def forward(self, batch):
-        if self.use_pid == "realistic":  # only for pythia
-            batch["tracks"].x = torch.cat([batch["tracks"].x, batch["tracks"].real_pid], dim=1)
-        elif self.use_pid == "true":  # mc response for lhcb or onehot for pythia
-            batch["tracks"].x = torch.cat([batch["tracks"].x, batch["tracks"].pid], dim=1)
+        _attach_pid(batch, self.use_pid)
         return self.model(batch)
 
     def _seqrec_loss(self, batch, outputs, block):
@@ -1397,7 +1486,12 @@ class DFEILightningModule(L.LightningModule):
             return None, None
         ev_in = self._setpred_event_inputs(batch, block)
         if ev_in is None:
-            return None, None
+            # [2026-10-20 FIX] freeze_backbone 下主干 loss 无梯度; 若此处返回 None,
+            # 整个 combined_loss 变成常数, backward 报 "does not require grad"。
+            # 返回一个与头参数相连的零损失, 保证计算图非空。
+            _h = self.slot_head if self.slot_head is not None else self.oc_head
+            _z = sum(p.sum() for p in _h.parameters()) * 0.0
+            return _z, ("slot" if self.slot_head is not None else "oc")
         try:
             from wmpgnn.model.partition_heads import oc_loss, slot_mask_loss
             _tt = batch[('tracks', 'to', 'tracks')]
@@ -1416,17 +1510,31 @@ class DFEILightningModule(L.LightningModule):
                     ocs.append(l)
                 if self.slot_head is not None:
                     m, o = self.slot_head(hn)
-                    l2, _, _ = slot_mask_loss(m, o, y_e)
+                    l2, _sd, _asg = slot_mask_loss(m, o, y_e)
                     _rw = float(self.configs.get("part_relax_weight", 0.0))
                     if _rw > 0:
                         from wmpgnn.model.partition_heads import partition_relax_loss
                         l2 = l2 + _rw * partition_relax_loss(m, y_e)
+                    # [2026-11-03] 链级完整性 / Sinkhorn 可微组装
+                    _cw = float(self.configs.get("slot_chain_loss_w", 0.0))
+                    _sw = float(self.configs.get("slot_sinkhorn_w", 0.0))
+                    if _cw > 0 or _sw > 0:
+                        from wmpgnn.model.partition_heads import (chain_complete_loss,
+                                                                  sinkhorn_loss)
+                        if _cw > 0:
+                            l2 = l2 + _cw * chain_complete_loss(m, y_e, _asg)
+                        if _sw > 0:
+                            l2 = l2 + _sw * sinkhorn_loss(
+                                m, y_e, _asg,
+                                tau=float(self.configs.get("slot_sinkhorn_tau", 1.0)),
+                                iters=int(self.configs.get("slot_sinkhorn_iters", 20)))
                     sls.append(l2)
             if self.oc_head is not None and ocs:
                 return torch.stack(ocs).mean(), "oc"
             if self.slot_head is not None and sls:
                 return torch.stack(sls).mean(), "slot"
-            return None, None
+            _h = self.slot_head if self.slot_head is not None else self.oc_head
+            return sum(p.sum() for p in _h.parameters()) * 0.0, ("slot" if self.slot_head is not None else "oc")
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1493,6 +1601,7 @@ class DFEILightningModule(L.LightningModule):
         try:
             from wmpgnn.model.partition_heads import decode_oc, decode_slots
             labels = []
+            probs = []
             for (hn, _ei_e, _he) in ev_in:
                 with torch.no_grad():
                     if getattr(self, "oc_head", None) is not None:
@@ -1500,15 +1609,142 @@ class DFEILightningModule(L.LightningModule):
                         lbl = decode_oc(torch.sigmoid(b), emb,
                                         beta_thr=float(self.configs.get("oc_beta_thr", 0.5)),
                                         td=float(self.configs.get("oc_td", 1.0)))
+                        probs.append(None)
                     else:
                         m, o = self.slot_head(hn)
                         lbl = decode_slots(m, o,
                                            mask_thr=float(self.configs.get("slot_mask_thr", 0.5)))
+                        # 逐节点 x 槽位归属概率 (供重建阶段的划分一致性门控)
+                        # [2026-10-30 FIX] 与 decode_slots 同源: objectness<0.5 的槽位概率置零,
+                        # 否则门控会把"已被 decode_slots 丢弃的槽位"当成有效归属。
+                        _p = torch.sigmoid(m)
+                        _alive = (torch.sigmoid(o.mean(dim=0)) >= 0.5).float().unsqueeze(0)
+                        probs.append((_p * _alive).detach().cpu().numpy())
                 labels.append(lbl.detach().cpu().numpy().astype(int))
+            self._last_partition_probs = probs
             return labels
         except Exception as e:
             print(f"[partition] WARN(labels): {type(e).__name__}: {e}")
             return None
+
+    # ---------------- [2026-11-08] 输出侧直接化 A/B/C ----------------
+    def _denorm_vertex_pos(self, x):
+        """tracks.x 的生产点三列 -> mm (用 normalization_dict 去归一化; 缺字典则原样)。"""
+        import torch as _t
+        p = x[:, self.vertex_pos_cols].float()
+        keys = ["xProd_reco", "yProd_reco", "zProd_reco"]
+        if all(k in self._nc for k in keys) and all(k in self._ns for k in keys):
+            c = _t.tensor([self._nc[k] for k in keys], device=p.device, dtype=p.dtype)
+            s = _t.tensor([self._ns[k] for k in keys], device=p.device, dtype=p.dtype)
+            p = p * s + c
+        return p
+
+    def _direct_loss(self, batch, outputs, block):
+        """A/B/C 新输出头损失 (逐事件, 复用最后一个 block 的节点/边表征)。"""
+        if self.split_head is None and self.anchor_head is None and self.vertex_head is None:
+            return None, None
+        ev_in = self._setpred_event_inputs(batch, block)
+        _h0 = self.split_head or self.anchor_head or self.vertex_head
+        if ev_in is None:
+            return sum(p.sum() for p in _h0.parameters()) * 0.0, "direct"
+        try:
+            from wmpgnn.model.direct_heads import (split_loss, anchor_loss, arc_loss,
+                                                  pseudo_vertex_groups)
+            from wmpgnn.model.set_pred_head import setpred_event_loss
+            from wmpgnn.reconstruction.topk_selection import truth_chain_roots
+            _tt = batch[('tracks', 'to', 'tracks')]
+            n_nodes = int(batch['tracks'].x.shape[0])
+            lab = truth_chain_labels(_tt.y, _tt.edge_index, n_nodes)
+            tb = (batch['tracks'].batch if 'batch' in batch['tracks']
+                  else torch.zeros(n_nodes, dtype=torch.long, device=lab.device))
+            root_lab = truth_chain_roots(_tt.y, _tt.edge_index, tb, lab.device)
+            pos_all = self._denorm_vertex_pos(batch['tracks'].x)
+            eb = tb[_tt.edge_index[0]]
+            terms = []
+            for e, (hn, ei_e, he) in enumerate(ev_in):
+                if int(hn.shape[0]) < 2:
+                    continue
+                y_e = _tt.y[eb == e].reshape(-1) if _tt.y.dim() == 1 else _tt.y[eb == e]
+                if y_e.dim() > 1:
+                    y_e = y_e.argmax(-1)
+                if self.split_head is not None and int(y_e.numel()) > 0:
+                    s_logit, g_logit = self.split_head(hn, ei_e, he)
+                    bce, ce = split_loss(s_logit, g_logit, y_e,
+                                         pos_weight=self.split_pos_w, gap_weight=self.split_gap_w)
+                    terms.append(bce + ce)
+                if self.anchor_head is not None:
+                    lab_e = lab[tb == e]
+                    rt = root_lab[tb == e]
+                    roots = torch.nonzero(rt > 0.5).flatten()
+                    if int(roots.numel()) == 0:
+                        roots = torch.topk(torch.sigmoid(self.anchor_head.root(hn).squeeze(-1)),
+                                           k=min(self.anchor_k, int(hn.shape[0]))).indices
+                    if int(roots.numel()) > self.anchor_k:
+                        roots = roots[:self.anchor_k]
+                    r_logit, a_logit = self.anchor_head(hn, roots)
+                    l_a, _ = anchor_loss(r_logit, a_logit, rt, lab_e, roots)
+                    terms.append(l_a)
+                if self.vertex_head is not None:
+                    masks, _gid = pseudo_vertex_groups(pos_all[tb == e], tol_mm=self.vertex_tol)
+                    masks = masks.to(hn.device)
+                    if int(masks.shape[0]) >= 2:
+                        out = self.vertex_head.forward_event(hn, ei_e, he)
+                        l_v, _ = setpred_event_loss(out, masks)
+                        terms.append(l_v)
+                        l_arc = arc_loss(self.arc_head, hn, masks, lab[tb == e])
+                        if l_arc is not None:
+                            terms.append(l_arc)
+            if not terms:
+                return sum(p.sum() for p in _h0.parameters()) * 0.0, "direct"
+            return torch.stack(terms).mean(), "direct"
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[direct] WARN(loss): {type(e).__name__}: {e}")
+            return sum(p.sum() for p in _h0.parameters()) * 0.0, "direct"
+
+    def _direct_labels(self, batch, block):
+        """A/B/C 推理: 逐事件新输出 -> 逐节点链标签 (-1=背景)。"""
+        if not self.direct_decode:
+            return None
+        ev_in = self._setpred_event_inputs(batch, block)
+        if ev_in is None:
+            return None
+        import numpy as _np
+        from wmpgnn.model.direct_heads import (decode_split, decode_anchor, decode_vertex,
+                                              pseudo_vertex_groups)
+        n_nodes = int(batch['tracks'].x.shape[0])
+        tb = (batch['tracks'].batch if 'batch' in batch['tracks']
+              else torch.zeros(n_nodes, dtype=torch.long, device=batch['tracks'].x.device))
+        pos_all = self._denorm_vertex_pos(batch['tracks'].x)
+        labels = []
+        for e, (hn, ei_e, he) in enumerate(ev_in):
+            n_e = int(hn.shape[0])
+            lab = None
+            try:
+                with torch.no_grad():
+                    if self.direct_decode == "split" and self.split_head is not None:
+                        s_logit, g_logit = self.split_head(hn, ei_e, he)
+                        lab = decode_split(torch.sigmoid(s_logit), ei_e, n_e,
+                                           thr=self.direct_thr,
+                                           gap_prob=torch.softmax(g_logit, -1),
+                                           gap_min=self.configs.get("direct_gap_min", None))
+                    elif self.direct_decode == "anchor" and self.anchor_head is not None:
+                        r_logit = self.anchor_head.root(hn).squeeze(-1)
+                        lab = decode_anchor(r_logit, hn, self.anchor_head, n_e, k=self.anchor_k,
+                                            root_thr=float(self.configs.get("anchor_root_thr", 0.5)))
+                    elif self.direct_decode == "vertex" and self.vertex_head is not None:
+                        from wmpgnn.model.set_pred_head import decode_slots
+                        out = self.vertex_head.forward_event(hn, ei_e, he)
+                        vlab, _alive = decode_slots(
+                            out, exist_thr=float(self.configs.get("setpred_exist_thr", 0.5)))
+                        lab = decode_vertex(vlab.cpu().numpy(), hn, self.arc_head, n_e,
+                                            arc_thr=self.arc_thr)
+            except Exception as ex:
+                print(f"[direct] WARN(label e{e}): {type(ex).__name__}: {ex}")
+                lab = None
+            labels.append(lab if lab is not None else _np.full(n_e, -1, dtype=_np.int64))
+        return labels
 
     def _setpred_labels(self, batch, block):
         """方向2 (推理): 逐事件解码槽位 -> 逐节点标签。
@@ -1544,7 +1780,9 @@ class DFEILightningModule(L.LightningModule):
         if getattr(self, "set_pred_head", None) is not None:
             params += list(self.set_pred_head.parameters())
         # [2026-10-18] M1/M2 输出头必须进优化器 (否则 freeze_backbone 下参数永不更新)
-        for _hobj in (getattr(self, "oc_head", None), getattr(self, "slot_head", None)):
+        for _hobj in (getattr(self, "oc_head", None), getattr(self, "slot_head", None),
+                      getattr(self, "split_head", None), getattr(self, "anchor_head", None),
+                      getattr(self, "vertex_head", None), getattr(self, "arc_head", None)):
             if _hobj is not None:
                 params += list(_hobj.parameters())
         optimizer = self.optimizer_class(params, **self.optimizer_params)
@@ -1828,10 +2066,7 @@ class DFEILightningModule(L.LightningModule):
                                       sample=(mode == "train"), cap=cap)
 
         # modify batch to include pid information depending on use_pid or not
-        if self.use_pid == "realistic":
-            batch["tracks"].x = torch.cat([batch["tracks"].x, batch["tracks"].real_pid], dim=1)
-        elif self.use_pid == "true":
-            batch["tracks"].x = torch.cat([batch["tracks"].x, batch["tracks"].pid], dim=1)
+        _attach_pid(batch, self.use_pid)
         if mode == "test" and self.configs["pv_asso"]:
             minip = batch[("tracks", "to", "pvs")].edges.flatten()
 
@@ -2299,11 +2534,22 @@ class DFEILightningModule(L.LightningModule):
                 loss["setpred"] = _sp
                 log.setdefault("setpred_loss", []).append(float(_sp.detach()))
         # ==== [2026-10-18] M1/M2 输出头损失 (OC / Slot+Mask) ====
-        if mode == "train" and (self.oc_head is not None or self.slot_head is not None):
+        # [2026-10-26 FIX] val 也算: 否则冻结主干时没有任何指标能反映新头的好坏,
+        # ModelCheckpoint / EarlyStopping (monitor=val_partition_loss) 看不到训练进展。
+        if mode in ("train", "val") and (self.oc_head is not None or self.slot_head is not None):
             _pl, _pname = self._partition_loss(batch, outputs, block)
             if _pl is not None:
                 loss[_pname] = _pl
                 log.setdefault(f"{_pname}_loss", []).append(float(_pl.detach()))
+                log.setdefault("partition_loss", []).append(float(_pl.detach()))
+        # ==== [2026-11-08] A/B/C 新输出头 (split / anchor / vertex) ====
+        if mode in ("train", "val") and (self.split_head is not None or self.anchor_head is not None
+                                         or self.vertex_head is not None):
+            _dl, _dname = self._direct_loss(batch, outputs, block)
+            if _dl is not None:
+                loss[_dname] = _dl
+                log.setdefault(f"{_dname}_loss", []).append(float(_dl.detach()))
+                log.setdefault("partition_loss", []).append(float(_dl.detach()))
         if "chain_select" in loss and self.chain_scorer is not None:
             combined_loss = combined_loss + self.chain_loss_weight * loss["chain_select"]
         if "source" in loss and self.source_head_on:
@@ -2344,10 +2590,20 @@ class DFEILightningModule(L.LightningModule):
             combined_loss = combined_loss + self.oc_loss_w * loss["oc"]
         if self.slot_loss_w > 0 and "slot" in loss:
             combined_loss = combined_loss + self.slot_loss_w * loss["slot"]
+        # [2026-11-08] A/B/C 新输出头 (缺省未建 -> 不进入)
+        if self.direct_loss_w > 0 and "direct" in loss:
+            combined_loss = combined_loss + self.direct_loss_w * loss["direct"]
 
         # 极端防御: 组合 loss 仍非有限或异常巨大时, 置为 0 损失, 避免梯度爆炸污染训练
         if not torch.isfinite(combined_loss) or combined_loss > 1e5:
             combined_loss = torch.zeros((), device=combined_loss.device, requires_grad=True)
+        # [2026-10-20 FIX] freeze_backbone 且新头未贡献损失时, 跳过该 batch, 避免常数 loss 反传
+        if mode == "train" and not combined_loss.requires_grad:
+            _n = getattr(self, "_n_nograd_batch", 0)
+            if _n < 3:
+                print(f"[partition] WARN: combined_loss 无梯度, 跳过该 batch (n={_n+1})", flush=True)
+            self._n_nograd_batch = _n + 1
+            return None
 
         # Apply reco
         if mode == "test":
@@ -2383,9 +2639,18 @@ class DFEILightningModule(L.LightningModule):
                     outputs.setpred_labels = _sp_labels
             # [2026-10-18] M1/M2: 新解码标签 (取代连通分量)
             if bool(self.configs.get("partition_decode", False)):
+                self._last_partition_probs = None
                 _pl_labels = self._partition_labels(batch, block)
                 if _pl_labels is not None:
                     outputs.setpred_labels = _pl_labels
+                    _pp = getattr(self, "_last_partition_probs", None)
+                    if _pp is not None:
+                        outputs.setpred_probs = _pp
+            # [2026-11-08] A/B/C: 新输出头的逐节点链标签 (取代连通分量)
+            if self.direct_decode:
+                _dl_labels = self._direct_labels(batch, block)
+                if _dl_labels is not None:
+                    outputs.setpred_labels = _dl_labels
             self.evt_reco.reconstruct_heavyhadrons(outputs, pv_des=pv_asso_des)
 
         """Logging"""

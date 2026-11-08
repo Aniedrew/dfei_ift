@@ -1,0 +1,31 @@
+evaluate:
+  nfiles:
+  - 20
+  over_write: bench_v3
+  sample:
+  - inclusive_00342451
+inference:
+  edge_prune_thr: 0.9
+  node_prune_thr: 0.9
+  model: 651
+  dump_edges: report_figs/edge_dump/full_v651
+  dump_tag: v651
+  dump_max: 600
+settings:
+  calibration: false
+  data_seed: 0
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
+  graph_mode: None
+  model_arch: DFEI
+  model: 651
+  ncpu: 4
+  nfiles:
+  - 20
+  ngpu: 1
+  node_sel: 'true'
+  pv_model: None
+  sample:
+  - inclusive_00342451
+  dump_edges: report_figs/edge_dump/full_v651
+  dump_tag: v651
+  dump_max: 600

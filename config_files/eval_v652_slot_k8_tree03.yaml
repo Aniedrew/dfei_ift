@@ -1,0 +1,23 @@
+settings:
+  data_dir: /lzufs/user/guoqingxiang/DFEI_IFT_20260904/data/MC_normed
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  model_arch: DFEI
+  model: 1502
+  ngpu: 1
+  ncpu: 4
+  graph_mode: None
+  node_sel: 'true'
+  pv_model: None
+  calibration: false
+inference:
+  tree_decode: forest
+  tree_thr: 0.3
+evaluate:
+  sample:
+  - inclusive_00342451
+  nfiles:
+  - 20
+  over_write: v652_slot_k8_tree03

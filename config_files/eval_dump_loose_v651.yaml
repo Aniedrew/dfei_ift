@@ -15,10 +15,13 @@ settings:
   dump_edges: report_figs/edge_dump/loose_v651
   dump_tag: v651
   dump_max: 600
+  node_prune: true
+  node_prune_thr: 0.0
+  edge_prune_thr: 0.0
 inference:
   LCA: true
   LCA_weights: true
-  node_prune: false
+  node_prune: true
   node_prune_weights: true
   edge_prune: false
   edge_prune_weights: true
