@@ -770,13 +770,26 @@ class EventReconstruction:
         配置 (均在 inference 段):
           phys_post(true) / phys_b_masses([5279.6, 5366.9] MeV) / phys_mass_tol(250 MeV)
           phys_charge_max(1) / phys_min_tracks(3)
-        质量用末态径迹动量和 π 质量重建 (末态含轻子/K 时用 π 质量近似, 只作粗窗)。
+
+        **前提**: 本函数需要 graph['tracks'].x 仍是**原始径迹特征** (px,py,pz, xProd..,
+        Charge)。但重建阶段拿到的是模型输出图 (`outputs.to_data_list()`)，其 x 已是
+        decoder 的 16 维 latent —— 直接按列取动量没有物理意义。
+        [2026-11-08 实测] v651_phys_post 一跑就把链全剪光 (All/Perf = 0.00)，原因即此。
+        因此这里显式校验列数与电荷取值域；不满足就打印一次警告并**原样返回**，
+        避免再产出一份"看起来跑完了"的无效结果。要真正启用 D，需要把原始径迹特征
+        单独挂到 graph 上 (如 graph['tracks'].x_raw) 再喂进来。
         """
         import numpy as _np
         keys = ["px_reco", "py_reco", "pz_reco"]
         if not all(k in self._nc for k in keys):
             return rc_dict
         x = graph['tracks'].x
+        if x.shape[1] < 8 or x.shape[1] > 9:
+            if not getattr(self, "_phys_post_warned", False):
+                print(f"[phys_post] 跳过: tracks.x 是 {x.shape[1]} 维 (非原始径迹特征), "
+                      "物理量按列无效; 见 _phys_post_filter docstring", flush=True)
+                self._phys_post_warned = True
+            return rc_dict
         p = x[:, :3].float().cpu().numpy()
         sc = _np.asarray([self._ns[k] for k in keys], dtype=_np.float32)
         ce = _np.asarray([self._nc[k] for k in keys], dtype=_np.float32)
@@ -805,6 +818,13 @@ class EventReconstruction:
                 continue
             kept[ck] = cluster
         graph._phys_post_info = {"n_in": len(rc_dict), "n_out": len(kept)}
+        # 兜底: 过滤掉一半以上的链说明窗口/电荷判据与当前重建标定不匹配, 直接放弃这次过滤
+        if len(kept) * 2 < len(rc_dict):
+            if not getattr(self, "_phys_post_warned", False):
+                print(f"[phys_post] 放弃: 会剪掉 {len(rc_dict) - len(kept)}/{len(rc_dict)} 条链 "
+                      "(窗口与重建标定不匹配); 保持原结果", flush=True)
+                self._phys_post_warned = True
+            return rc_dict
         return kept
 
     def reconstruct_single_evt(self, args):
